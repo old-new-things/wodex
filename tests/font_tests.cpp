@@ -1,5 +1,5 @@
 #include "platform.hpp"
-#include "ui.hpp"
+#include "wodex_render.h"
 
 #include <SDL.h>
 #include <SDL_ttf.h>
@@ -86,28 +86,32 @@ void check_rendering(const wodex::Platform& platform) {
   std::unique_ptr<SDL_Renderer, decltype(&SDL_DestroyRenderer)> renderer{
     SDL_CreateSoftwareRenderer(surface.get()), &SDL_DestroyRenderer};
   if (!renderer) throw std::runtime_error(SDL_GetError());
-  wodex::Canvas canvas{renderer.get(), platform};
+  const auto api = wodex_render_api(renderer.get(), &platform);
+  std::unique_ptr<WodexCanvas, decltype(&wodex_canvas_free)> canvas{
+    wodex_canvas_new(&api), &wodex_canvas_free};
+  if (!canvas) throw std::runtime_error("Cannot construct the Rust font renderer.");
+  constexpr WodexColor ink{237, 241, 238, 255};
   const std::string mixed = "简体中文／繁體漢字，Hello Switch! 日本語あいう 한국어。𠮷\n";
   std::string long_text;
   for (int index = 0; index < 40; ++index) long_text += mixed;
-  const SDL_Rect clip{16, 16, 260, 200};
+  const WodexRect clip{16, 16, 260, 200};
 
   // These are the UI's reasoning, default, message, and editor point sizes.
   for (const int size : std::array<int, 4>{17, 20, 21, 22}) {
     SDL_SetRenderDrawColor(renderer.get(), 0, 0, 0, 255);
     if (SDL_RenderClear(renderer.get()) != 0) throw std::runtime_error(SDL_GetError());
-    const int single_height = canvas.paragraph("中文", 0, 0, size, wodex::ink, clip.w, false);
+    const int single_height = wodex_canvas_paragraph(canvas.get(), "中文", 0, 0, size, ink, clip.w, false);
     check(single_height > size, "CJK line spacing does not contain a full glyph.");
-    const int measured = canvas.paragraph(long_text, 0, 0, size, wodex::ink, clip.w, false);
+    const int measured = wodex_canvas_paragraph(canvas.get(), long_text.c_str(), 0, 0, size, ink, clip.w, false);
     check(measured > clip.h, "Long mixed-language text did not wrap beyond the viewport.");
     check(measured % single_height == 0, "Wrapped text has inconsistent line spacing.");
-    canvas.clip(clip);
-    const int rendered = canvas.paragraph(long_text, clip.x, clip.y, size, wodex::ink, clip.w);
-    canvas.unclip();
+    wodex_canvas_clip(canvas.get(), clip);
+    const int rendered = wodex_canvas_paragraph(canvas.get(), long_text.c_str(), clip.x, clip.y, size, ink, clip.w, true);
+    wodex_canvas_unclip(canvas.get());
     check(rendered == measured, "Measuring and rendering disagree on CJK paragraph height.");
-    check(canvas.paragraph(long_text, 0, 0, size, wodex::ink, clip.w, false) == measured,
+    check(wodex_canvas_paragraph(canvas.get(), long_text.c_str(), 0, 0, size, ink, clip.w, false) == measured,
       "Cached CJK paragraph metrics changed.");
-    check(canvas.text_width("中文", size) > canvas.text_width("中", size),
+    check(wodex_canvas_text_width(canvas.get(), "中文", size) > wodex_canvas_text_width(canvas.get(), "中", size),
       "CJK text width does not account for each character.");
 
     std::vector<Uint32> pixels(surface_width * surface_height);
@@ -126,7 +130,7 @@ void check_rendering(const wodex::Platform& platform) {
       }
     }
     check(visible, "Mixed-language text produced no visible pixels.");
-    ++passed;
+    check(wodex_canvas_ok(canvas.get()), "The Rust renderer reported an SDL/TTF error.");
   }
 }
 

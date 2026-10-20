@@ -114,14 +114,16 @@ cmake --build build/desktop --parallel
 ctest --test-dir build/desktop --output-on-failure
 ```
 
-The native tests start isolated loopback mock servers. They test real curl transport against the Rust core, including fragmented UTF-8 streams, reasoning, usage, retry, HTTP errors, cancellation, queue limits, and durable storage. Update tests verify downloads, checksums, release source restrictions, cancellation, backup preservation and rollback failures. Font tests check Chinese and mixed-language glyph coverage and render wrapped text; UI smoke tests render chat and update pages. No tests require a real API key or spend API credits.
+The integration tests start isolated loopback mock servers. They drive the Rust application through SDL input and real curl transport, and test fragmented UTF-8 streams, reasoning, usage, retry, HTTP errors, cancellation, queue limits, and durable storage. Update tests verify downloads, checksums, release source restrictions, cancellation, backup preservation and rollback failures. Font tests exercise the production Rust renderer with real Chinese and mixed-language fonts; UI smoke tests render chat and update pages. No tests require a real API key or spend API credits.
 
 ## Source map
 
-- `core/`: Rust state machine, validation, persistence model, SSE parser, C ABI, tests.
-- `native/`: SDL interface, controller input, libnx services, storage, curl worker.
+- `core/src/app/`: Rust views, editor, text layout/cache, platform interfaces, and tests.
+- `core/src/app.rs`: Rust application actions, navigation, chat/update coordination, and saving.
+- `core/src/`: conversation state, validation, persistence model, SSE parser, release validation, and C ABI.
+- `native/`: SDL/TTF primitives, input normalization, libnx services, storage, curl/update workers, and process lifecycle.
 - `scripts/`: desktop dependency fallback and Switch build.
 - `tests/`: native integration suite and local mock API.
-- `romfs/`: bundled public CA certificates.
+- `romfs/`: bundled CJK font, license/attribution, and public CA certificates.
 
 Wodex code is MIT licensed. Third-party notices are in [THIRD_PARTY.md](THIRD_PARTY.md).

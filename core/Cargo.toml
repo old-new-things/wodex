@@ -3,7 +3,7 @@ name = "wodex-core"
 version = "0.2.0"
 edition = "2021"
 license = "MIT"
-description = "Transport-independent chat state and streaming protocol for Wodex"
+description = "Wodex application, views, text renderer, and chat protocol for no_std and desktop"
 
 [lib]
 crate-type = ["rlib", "staticlib"]

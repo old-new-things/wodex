@@ -43,14 +43,14 @@ impl Default for Settings {
 
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct SettingsPatch {
-  api_key: Option<String>,
-  base_url: Option<String>,
-  model: Option<String>,
-  thinking: Option<bool>,
-  max_tokens: Option<u32>,
-  system_prompt: Option<String>,
-  update_repository: Option<String>,
+pub(crate) struct SettingsPatch {
+  pub api_key: Option<String>,
+  pub base_url: Option<String>,
+  pub model: Option<String>,
+  pub thinking: Option<bool>,
+  pub max_tokens: Option<u32>,
+  pub system_prompt: Option<String>,
+  pub update_repository: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
@@ -111,7 +111,7 @@ struct Storage {
 
 #[derive(Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
-enum Command {
+pub(crate) enum Command {
   Snapshot {},
   Export {},
   Settings { settings: SettingsPatch },
@@ -157,6 +157,11 @@ impl Default for WodexCore {
 }
 
 impl WodexCore {
+  /// Borrow validated state directly; native clients keep using the stable C API.
+  pub(crate) fn state(&self) -> &State {
+    &self.state
+  }
+
   pub fn new(saved_json: Option<&str>) -> Self {
     let mut core = Self::default();
     if let Some(saved_json) = saved_json {
@@ -199,7 +204,7 @@ impl WodexCore {
     json!({"ok": true, "done": self.stream.as_ref().is_some_and(|stream| stream.done)})
   }
 
-  fn execute(&mut self, command: Command) -> Result<Value, String> {
+  pub(crate) fn execute(&mut self, command: Command) -> Result<Value, String> {
     match command {
       Command::Snapshot {} => Ok(json!({"ok": true, "state": self.state})),
       Command::Export {} => {

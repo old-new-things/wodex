@@ -2,6 +2,7 @@
 
 extern crate alloc;
 
+mod app;
 mod ffi;
 mod state;
 mod stream;
