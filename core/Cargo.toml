@@ -1,6 +1,6 @@
 [package]
 name = "wodex-core"
-version = "0.3.0"
+version = "0.2.1"
 edition = "2021"
 license = "MIT"
 description = "Wodex application and I/O backends for no_std Switch and desktop"

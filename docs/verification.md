@@ -27,9 +27,9 @@ Local verification completed on 2026-10-20.
 | Nested RomFS resource rebuilds and required-font guard | Passed |
 | Long-history fixture, 20 turns / about 1.28 MiB text, bundled CJK font | 0.10 seconds to render and exit, 50.4 MiB peak RSS on desktop software renderer |
 
-Local NRO: `build/switch/wodex.nro`, version 0.3.0, 26,130,102 bytes (about 24.9 MiB). Embedded NACP version and a fixed nightly test identity are verified.
+Local NRO: `build/switch/wodex.nro`, version 0.2.1, 26,130,102 bytes (about 24.9 MiB). The embedded NACP version is verified. This local build used fixed publication metadata for validation.
 
-SHA-256: `e5fac3bc4610cbfcc37e5158a45ef1a90433e62f5ffad9476f4ef4972983fce2`. Published CI binaries embed their actual workflow identity and have their own download checksums.
+SHA-256: `4da5dd59bbe29aceeb781a8977315c985852c4a8eac6162d8d229525fd97a3e5`. Published CI binaries embed their actual workflow identity and have their own download checksums.
 
 Native tests call the production Rust transport and storage through test-only C++ facades. They cover actual curl transfer, every-byte fragmented UTF-8 SSE, reasoning/content/usage, retry context, authentication errors without response-body leakage, redirect refusal, truncation, cancellation, queue limits, private desktop writes, unique recovery backups, and persistence roundtrips. The application test drives the production Rust application through SDL compose, editor cancellation, send, retry, update navigation and exit/reload, including an environment-only API key. Adapter tests verify normalized SDL/libnx input and clipboard values. Font tests exercise the Rust filename selection and renderer for Simplified/Traditional Chinese, Latin, kana, Hangul, punctuation and representative rare CJK characters, wrapping and clipping at four UI point sizes, font overrides and resource selection.
 

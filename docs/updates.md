@@ -11,6 +11,8 @@ New installations use `old-new-things/wodex` and the **Versions** channel. Exist
 3. Wait for verification to complete. Choose **Install and exit** to replace the running NRO.
 4. Launch Wodex again from hbmenu. Installation exits the app; it does not restart it automatically.
 
+Wodex 0.2.1 adds the optional Nightly channel. Wodex 0.2.0 can update through Versions normally. If you installed the early nightly from commit `52dd555`, which displayed the provisional version 0.3.0, install 0.2.1 manually once: close Wodex, copy its `wodex.nro` from the [Versions downloads](https://old-new-things.github.io/wodex/#version) over your existing NRO, and reopen it. Preserve the application data directory. That nightly's existing updater rejects lower version numbers; changing the feed cannot override that check.
+
 The app reads `https://old-new-things.github.io/wodex/updates/stable.json` when configured for this repository. The feed uses `schema_version: 1`, `channel: "version"` and a required `build` field. Before the first explicit version is published, `build` is `null` and the app reports no newer version. Otherwise it contains:
 
 ```json
@@ -66,6 +68,8 @@ Successful `main` pushes publish nightlies. A daily run at **00:17 UTC** and man
 The build identity job obtains the source workflow attempt's start time and commit from GitHub. The Switch compiler embeds them through `WODEX_BUILD_CHANNEL`, `WODEX_BUILD_TIMESTAMP`, and `WODEX_BUILD_COMMIT`. A CI-only `build-info.json` accompanies the artifact; publication requires it to match the independently validated source run and `VERSION`. All three environment variables must be supplied together for a local published-identity build; leaving them unset produces a development build.
 
 `VERSION` is the canonical application version, used by both the desktop version string and Switch NACP metadata. It must contain one `X.Y.Z` version of at most 15 ASCII characters, without leading zeroes in a component. An explicit version is published by pushing a tag containing `v` followed by that exact value. The tagged commit must already be reachable from `main`.
+
+Normal development keeps the version number unchanged and publishes timestamped nightlies. Change the version number when preparing an intentional fixed-version publication; this updater change is version 0.2.1.
 
 After committing and pushing the version's source to `main`, create and push its tag:
 

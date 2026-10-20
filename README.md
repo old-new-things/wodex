@@ -106,6 +106,8 @@ Open **Settings → Updates**, choose **Versions** or opt into **Nightly**, then
 
 Nightlies carry a UTC build timestamp and commit so the app can detect newer builds sharing the same version number. Returning to Versions allows the final version matching an installed nightly; older version numbers are never selected.
 
+If you installed the early nightly labeled 0.3.0, [install 0.2.1 manually once](docs/updates.md#install-an-update). Existing 0.2.0 installations can update through Versions.
+
 Wodex downloads a newer version's `wodex.nro` to a sibling temporary file and verifies the feed's advertised size, SHA-256, executable headers and embedded assets. Installing saves conversations, closes the interface and embedded resources, preserves a launchable `.previous.nro`, and replaces the actual NRO path supplied by the loader. Reopen Wodex from hbmenu afterward. A normal exit never installs a downloaded update.
 
 The SD-card replacement uses two renames, so power interruption can require restoring the `.previous.nro` backup manually. [Update and recovery instructions](docs/updates.md) explain that boundary, both build channels, and publication recovery.
