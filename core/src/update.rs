@@ -3,28 +3,29 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-pub(crate) const MAX_RELEASE_BYTES: usize = 1024 * 1024;
+pub(crate) const MAX_UPDATE_BYTES: usize = 1024 * 1024;
 pub(crate) const MAX_VERSION_BYTES: usize = 64;
 pub(crate) const MAX_NRO_BYTES: u64 = 128 * 1024 * 1024;
 const NRO_HEADER_BYTES: u64 = 0x80;
 const ASSET_HEADER_BYTES: u64 = 0x38;
 
 #[derive(Deserialize)]
-struct GithubRelease {
-  tag_name: String,
-  draft: bool,
-  prerelease: bool,
-  assets: Vec<GithubAsset>,
-  body: Option<String>,
+#[serde(deny_unknown_fields)]
+struct UpdateFeed {
+  schema_version: u32,
+  channel: String,
+  #[serde(deserialize_with = "Option::deserialize")]
+  build: Option<PublishedBuild>,
 }
 
 #[derive(Deserialize)]
-struct GithubAsset {
-  name: String,
-  state: String,
+#[serde(deny_unknown_fields)]
+struct PublishedBuild {
+  version: String,
+  url: String,
   size: u64,
-  browser_download_url: String,
-  digest: Option<String>,
+  sha256: String,
+  notes: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -74,98 +75,70 @@ pub(crate) fn valid_repository(repository: &str) -> bool {
     && !repo.contains("..")
 }
 
-pub(crate) fn inspect(release_json: &str, current_version: &str) -> Value {
-  match inspect_release(release_json, current_version) {
+/// Project Pages paths are derived from the configured repository. Published
+/// metadata never gets to choose a different host, repository, or artifact.
+pub(crate) fn pages_base(repository: &str) -> Option<String> {
+  if !valid_repository(repository) {
+    return None;
+  }
+  let (owner, repo) = repository.split_once('/')?;
+  Some(format!("https://{}.github.io/{repo}", owner.to_ascii_lowercase()))
+}
+
+pub(crate) fn inspect(feed_json: &str, current_version: &str, repository: &str) -> Value {
+  match inspect_feed(feed_json, current_version, repository) {
     Ok(value) => value,
     Err(error) => json!({"ok":false,"available":false,"error":error}),
   }
 }
 
-fn inspect_release(release_json: &str, current_version: &str) -> Result<Value, &'static str> {
-  if release_json.len() > MAX_RELEASE_BYTES {
-    return Err("The release metadata exceeds the 1 MiB limit.");
+fn inspect_feed(
+  feed_json: &str,
+  current_version: &str,
+  repository: &str,
+) -> Result<Value, &'static str> {
+  if feed_json.len() > MAX_UPDATE_BYTES {
+    return Err("The update metadata exceeds the 1 MiB limit.");
   }
+  let base = pages_base(repository).ok_or("The configured update repository is invalid.")?;
   let current = Version::parse(current_version).ok_or("The installed version is invalid.")?;
-  let release: GithubRelease = serde_json::from_str(release_json)
-    .map_err(|_| "The update source returned invalid release metadata.")?;
-  if release.draft || release.prerelease {
-    return Err("The update source did not return a stable release.");
+  let feed: UpdateFeed = serde_json::from_str(feed_json)
+    .map_err(|_| "The update source returned invalid version metadata.")?;
+  if feed.schema_version != 1 || feed.channel != "version" {
+    return Err("The update source did not return a supported version feed.");
   }
-  let version = Version::parse(&release.tag_name)
-    .ok_or("The release tag must be a stable major.minor.patch version.")?;
-  let mut candidates = release.assets.iter().filter(|asset| asset.name == "wodex.nro");
-  let asset = candidates.next().ok_or("The release does not contain wodex.nro.")?;
-  if candidates.next().is_some() {
-    return Err("The release contains ambiguous wodex.nro assets.");
+  let Some(build) = feed.build else {
+    return Ok(json!({"ok":true,"available":false}));
+  };
+  let version = Version::parse(&build.version)
+    .filter(|version| version.normalized() == build.version)
+    .ok_or("The published version must use major.minor.patch format.")?;
+  if !(NRO_HEADER_BYTES..=MAX_NRO_BYTES).contains(&build.size) {
+    return Err("The published update size is invalid.");
   }
-  if asset.state != "uploaded" || !(NRO_HEADER_BYTES..=MAX_NRO_BYTES).contains(&asset.size) {
-    return Err("The release asset is incomplete or its size is invalid.");
+  let expected_url = format!("{base}/builds/version/{}/wodex.nro", build.version);
+  if build.url != expected_url {
+    return Err("The update must use the configured project's exact GitHub Pages version URL.");
   }
-  if !valid_download_url(&asset.browser_download_url, &release.tag_name) {
-    return Err("The release asset must use its public GitHub release download URL.");
+  if build.sha256.len() != 64 || !build.sha256.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+    return Err("The published update is missing a valid SHA-256 digest.");
   }
-  let digest = asset
-    .digest
-    .as_deref()
-    .and_then(|value| value.strip_prefix("sha256:"))
-    .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
-    .ok_or("The release asset is missing a valid SHA-256 digest.")?;
   if version <= current {
     return Ok(json!({"ok":true,"available":false}));
   }
-  let notes: String = release
-    .body
-    .unwrap_or_default()
+  let notes: String = build
+    .notes
     .chars()
     .filter(|character| !character.is_control() || matches!(character, '\n' | '\t'))
     .take(4096)
     .collect();
-  Ok(json!({"ok":true,"available":true,"release":{
-    "version":version.normalized(),"download_url":asset.browser_download_url,
-    "size":asset.size,"sha256":digest.to_ascii_lowercase(),"notes":notes
+  Ok(json!({"ok":true,"available":true,"build":{
+    "version":version.normalized(),"download_url":build.url,
+    "size":build.size,"sha256":build.sha256.to_ascii_lowercase(),"notes":notes
   }}))
 }
 
-fn valid_download_url(url: &str, tag: &str) -> bool {
-  if url.len() > 2048 || !url.is_ascii() {
-    return false;
-  }
-  let Some(path) = url.strip_prefix("https://github.com/") else { return false };
-  let mut parts = path.split('/');
-  let Some(owner) = parts.next() else { return false };
-  let Some(repo) = parts.next() else { return false };
-  if !valid_repository(&format!("{owner}/{repo}"))
-    || parts.next() != Some("releases")
-    || parts.next() != Some("download")
-  {
-    return false;
-  }
-  let Some(encoded_tag) = parts.next() else { return false };
-  if parts.next() != Some("wodex.nro") || parts.next().is_some() {
-    return false;
-  }
-  decode_tag(encoded_tag).as_deref() == Some(tag)
-}
-
-fn decode_tag(tag: &str) -> Option<String> {
-  if tag.len() > MAX_VERSION_BYTES * 3 {
-    return None;
-  }
-  let mut bytes = tag.bytes();
-  let mut decoded = Vec::new();
-  while let Some(byte) = bytes.next() {
-    if byte == b'%' {
-      let high = (bytes.next()? as char).to_digit(16)? as u8;
-      let low = (bytes.next()? as char).to_digit(16)? as u8;
-      decoded.push((high << 4) | low);
-    } else {
-      decoded.push(byte);
-    }
-  }
-  String::from_utf8(decoded).ok()
-}
-
-/// Incremental hashing is independent from release parsing and never reads an
+/// Incremental hashing is independent from update parsing and never reads an
 /// entire downloaded binary into memory. Use the software backend consistently
 /// on Switch; CPU-feature probes on freestanding Horizon are unavailable.
 pub struct WodexSha256 {
@@ -282,36 +255,37 @@ mod tests {
   use super::*;
   use alloc::vec;
 
-  fn release(tag: &str) -> Value {
+  fn feed(version: &str) -> Value {
     json!({
-      "tag_name":tag,"draft":false,"prerelease":false,"body":"New release\nWith improvements",
-      "assets":[{
-        "name":"wodex.nro","state":"uploaded","size":26_000_000,
-        "browser_download_url":format!("https://github.com/example/wodex/releases/download/{tag}/wodex.nro"),
-        "digest":format!("sha256:{}","ab".repeat(32))
-      }]
+      "schema_version":1,"channel":"version",
+      "build":{
+        "version":version,"size":26_000_000,"notes":"New version\nWith improvements",
+        "url":format!("https://example.github.io/wodex/builds/version/{version}/wodex.nro"),
+        "sha256":"ab".repeat(32)
+      }
     })
   }
 
-  fn inspect_value(release: &Value, current: &str) -> Value {
-    inspect(&release.to_string(), current)
+  fn inspect_value(feed: &Value, current: &str) -> Value {
+    inspect(&feed.to_string(), current, "example/wodex")
   }
 
   #[test]
   fn stable_versions_compare_numerically_and_normalize() {
-    let result = inspect_value(&release("v0.10.0"), "0.9.99");
+    let result = inspect_value(&feed("0.10.0"), "0.9.99");
     assert_eq!(result["ok"], true);
     assert_eq!(result["available"], true);
-    assert_eq!(result["release"]["version"], "0.10.0");
-    assert_eq!(result["release"]["sha256"], "ab".repeat(32));
-    assert_eq!(result["release"]["notes"], "New release\nWith improvements");
-    for (tag, current) in
-      [("v0.2.0", "0.2.0"), ("0.2.0", "v0.3.0"), ("1.2.99", "1.10.0"), ("9.999.999", "10.0.0")]
+    assert_eq!(result["build"]["version"], "0.10.0");
+    assert_eq!(result["build"]["sha256"], "ab".repeat(32));
+    assert_eq!(result["build"]["notes"], "New version\nWith improvements");
+    for (version, current) in
+      [("0.2.0", "0.2.0"), ("0.2.0", "v0.3.0"), ("1.2.99", "1.10.0"), ("9.999.999", "10.0.0")]
     {
-      assert_eq!(inspect_value(&release(tag), current), json!({"ok":true,"available":false}));
+      assert_eq!(inspect_value(&feed(version), current), json!({"ok":true,"available":false}));
     }
-    for tag in [
-      "v1.2.0-rc1",
+    for version in [
+      "v1.2.0",
+      "1.2.0-rc1",
       "1.2.0+metadata",
       "1.02.0",
       "V1.2.0",
@@ -321,78 +295,111 @@ mod tests {
       " 1.2.3",
       "1.2.18446744073709551616",
     ] {
-      assert_eq!(inspect_value(&release(tag), "0.1.0")["ok"], false, "{tag}");
+      assert_eq!(inspect_value(&feed(version), "0.1.0")["ok"], false, "{version}");
     }
     for current in ["", "garbage", "v1.2.3-rc1", "1.2"] {
-      assert_eq!(inspect_value(&release("1.2.3"), current)["ok"], false);
+      assert_eq!(inspect_value(&feed("1.2.3"), current)["ok"], false);
     }
   }
 
   #[test]
-  fn rejects_unstable_incomplete_unsigned_and_ambiguous_releases() {
-    for field in ["draft", "prerelease"] {
-      let mut metadata = release("0.2.0");
-      metadata[field] = json!(true);
-      assert_eq!(inspect_value(&metadata, "0.1.0")["ok"], false);
-    }
+  fn version_feed_requires_supported_schema_and_explicit_nullable_build() {
+    let empty = json!({"schema_version":1,"channel":"version","build":null});
+    assert_eq!(inspect_value(&empty, "0.1.0"), json!({"ok":true,"available":false}));
     for (field, value) in [
-      ("name", json!("wodex.zip")),
-      ("state", json!("starter")),
+      ("schema_version", json!(0)),
+      ("schema_version", json!(2)),
+      ("schema_version", json!("1")),
+      ("channel", json!("nightly")),
+      ("channel", json!(null)),
+      ("build", json!([])),
+      ("unknown", json!(true)),
+    ] {
+      let mut metadata = feed("0.2.0");
+      metadata[field] = value;
+      assert_eq!(inspect_value(&metadata, "0.1.0")["ok"], false, "{field}");
+    }
+    for field in ["schema_version", "channel", "build"] {
+      let mut metadata = feed("0.2.0");
+      metadata.as_object_mut().unwrap().remove(field);
+      assert_eq!(inspect_value(&metadata, "0.1.0")["ok"], false, "{field}");
+    }
+    assert_eq!(inspect_value(&empty, "invalid")["ok"], false);
+    assert_eq!(inspect(&empty.to_string(), "0.1.0", "../bad")["ok"], false);
+  }
+
+  #[test]
+  fn rejects_incomplete_malformed_and_oversized_version_metadata() {
+    for (field, value) in [
       ("size", json!(127)),
       ("size", json!(MAX_NRO_BYTES + 1)),
       ("size", json!(-1)),
       ("size", json!("26000000")),
-      ("digest", Value::Null),
-      ("digest", json!("sha256:bad")),
-      ("digest", json!("md5:bad")),
-      ("digest", json!(format!("sha256:{}", "zz".repeat(32)))),
+      ("sha256", Value::Null),
+      ("sha256", json!("sha256:bad")),
+      ("sha256", json!("zz".repeat(32))),
+      ("notes", Value::Null),
+      ("unexpected", json!(true)),
     ] {
-      let mut metadata = release("0.2.0");
-      metadata["assets"][0][field] = value;
+      let mut metadata = feed("0.2.0");
+      metadata["build"][field] = value;
       assert_eq!(inspect_value(&metadata, "0.1.0")["ok"], false, "{field}");
     }
-    let mut metadata = release("0.2.0");
-    metadata["assets"][0].as_object_mut().unwrap().remove("digest");
-    assert_eq!(inspect_value(&metadata, "0.1.0")["ok"], false);
-    metadata["assets"] = json!([]);
-    assert_eq!(inspect_value(&metadata, "0.1.0")["ok"], false);
-    let mut metadata = release("0.2.0");
-    let duplicate = metadata["assets"][0].clone();
-    metadata["assets"].as_array_mut().unwrap().push(duplicate);
-    assert_eq!(inspect_value(&metadata, "0.1.0")["ok"], false);
-    assert_eq!(inspect("{\"message\":\"secret user error\"}", "0.1.0")["ok"], false);
-    assert!(!inspect("{\"message\":\"secret user error\"}", "0.1.0")
-      .to_string()
-      .contains("secret user error"));
-    assert_eq!(inspect(&"x".repeat(MAX_RELEASE_BYTES + 1), "0.1.0")["ok"], false);
+    for field in ["version", "url", "size", "sha256", "notes"] {
+      let mut metadata = feed("0.2.0");
+      metadata["build"].as_object_mut().unwrap().remove(field);
+      assert_eq!(inspect_value(&metadata, "0.1.0")["ok"], false, "{field}");
+    }
+    let private_error = inspect("{\"message\":\"secret user error\"}", "0.1.0", "example/wodex");
+    assert_eq!(private_error["ok"], false);
+    assert!(!private_error.to_string().contains("secret user error"));
+    assert_eq!(inspect(&"x".repeat(MAX_UPDATE_BYTES + 1), "0.1.0", "example/wodex")["ok"], false);
+    // serde rejects duplicate fields rather than allowing ambiguous feeds.
+    assert_eq!(
+      inspect(
+        "{\"schema_version\":1,\"channel\":\"version\",\"build\":null,\"build\":null}",
+        "0.1.0",
+        "example/wodex"
+      )["ok"],
+      false
+    );
   }
 
   #[test]
-  fn release_download_urls_are_confined_to_github_assets_for_the_same_tag() {
+  fn download_urls_are_bound_to_the_configured_project_and_exact_version_path() {
     for url in [
-      "http://github.com/example/wodex/releases/download/0.2.0/wodex.nro",
-      "https://github.com.evil.test/example/wodex/releases/download/0.2.0/wodex.nro",
-      "https://github.com@evil.test/example/wodex/releases/download/0.2.0/wodex.nro",
-      "https://user@github.com/example/wodex/releases/download/0.2.0/wodex.nro",
-      "https://github.com:443/example/wodex/releases/download/0.2.0/wodex.nro",
-      "https://github.com/example/wodex/releases/download/0.1.0/wodex.nro",
-      "https://github.com/example/wodex/releases/download/0.2.0/wodex.nro?token=secret",
-      "https://github.com/example/wodex/releases/download/0.2.0/wodex.nro#fragment",
-      "https://github.com/example/wodex/releases/download/0.2.0/other.nro",
-      "https://github.com/example/../releases/download/0.2.0/wodex.nro",
-      "https://github.com/example/wodex/releases/download/%ZZ/wodex.nro",
-      "https://github.com/example/wodex/releases/download/%2F0.2.0/wodex.nro",
+      "http://example.github.io/wodex/builds/version/0.2.0/wodex.nro",
+      "https://example.github.io.evil.test/wodex/builds/version/0.2.0/wodex.nro",
+      "https://example.github.io@evil.test/wodex/builds/version/0.2.0/wodex.nro",
+      "https://user@example.github.io/wodex/builds/version/0.2.0/wodex.nro",
+      "https://example.github.io:443/wodex/builds/version/0.2.0/wodex.nro",
+      "https://other.github.io/wodex/builds/version/0.2.0/wodex.nro",
+      "https://example.github.io/other/builds/version/0.2.0/wodex.nro",
+      "https://example.github.io/wodex/builds/version/0.1.0/wodex.nro",
+      "https://example.github.io/wodex/builds/version/0.2.0/wodex.nro?token=secret",
+      "https://example.github.io/wodex/builds/version/0.2.0/wodex.nro#fragment",
+      "https://example.github.io/wodex/builds/version/0.2.0/other.nro",
+      "https://example.github.io/wodex/../builds/version/0.2.0/wodex.nro",
+      "https://example.github.io/wodex/builds/version/%30.2.0/wodex.nro",
+      "https://example.github.io/wodex/builds/nightly/0.2.0/wodex.nro",
+      "https://github.com/example/wodex/releases/download/0.2.0/wodex.nro",
     ] {
-      let mut metadata = release("0.2.0");
-      metadata["assets"][0]["browser_download_url"] = json!(url);
+      let mut metadata = feed("0.2.0");
+      metadata["build"]["url"] = json!(url);
       assert_eq!(inspect_value(&metadata, "0.1.0")["ok"], false, "{url}");
+      // Invalid metadata must not become acceptable just because it is old.
+      assert_eq!(inspect_value(&metadata, "1.0.0")["ok"], false, "{url}");
     }
-    let mut metadata = release("v0.2.0");
-    metadata["assets"][0]["browser_download_url"] =
-      json!("https://github.com/example/wodex/releases/download/%760.2.0/wodex.nro");
-    metadata["assets"][0]["digest"] = json!(format!("sha256:{}", "AB".repeat(32)));
-    assert_eq!(inspect_value(&metadata, "0.1.0")["ok"], true);
-    assert_eq!(inspect_value(&metadata, "0.1.0")["release"]["sha256"], "ab".repeat(32));
+    let mut metadata = feed("0.2.0");
+    metadata["build"]["sha256"] = json!("AB".repeat(32));
+    // DNS owner names are case-insensitive; project Pages paths retain case.
+    assert_eq!(inspect(&metadata.to_string(), "0.1.0", "EXAMPLE/Wodex")["ok"], false);
+    metadata["build"]["url"] =
+      json!("https://example.github.io/Wodex/builds/version/0.2.0/wodex.nro");
+    let result = inspect(&metadata.to_string(), "0.1.0", "EXAMPLE/Wodex");
+    assert_eq!(result["ok"], true);
+    assert_eq!(result["build"]["sha256"], "ab".repeat(32));
+    assert_eq!(inspect_value(&metadata, "0.1.0")["ok"], false);
   }
 
   #[test]
@@ -417,14 +424,15 @@ mod tests {
       "owner/repo?token=x",
     ] {
       assert!(!valid_repository(repository), "{repository}");
+      assert!(pages_base(repository).is_none());
     }
     assert!(!valid_repository(&format!("{}/repo", "a".repeat(40))));
     assert!(!valid_repository(&format!("owner/{}", "a".repeat(101))));
-    let mut metadata = release("0.2.0");
-    metadata["body"] = json!(format!("\u{0001}{}", "文".repeat(5000)));
+    let mut metadata = feed("0.2.0");
+    metadata["build"]["notes"] = json!(format!("\u{0001}{}", "文".repeat(5000)));
     let response = inspect_value(&metadata, "0.1.0");
-    assert_eq!(response["release"]["notes"].as_str().unwrap().chars().count(), 4096);
-    assert!(!response["release"]["notes"].as_str().unwrap().contains('\u{0001}'));
+    assert_eq!(response["build"]["notes"].as_str().unwrap().chars().count(), 4096);
+    assert!(!response["build"]["notes"].as_str().unwrap().contains('\u{0001}'));
   }
 
   #[test]

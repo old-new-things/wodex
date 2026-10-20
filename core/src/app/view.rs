@@ -427,7 +427,7 @@ impl View<'_> {
       Action::UpdateBack,
       false,
     );
-    self.canvas.text("GITHUB RELEASE SOURCE", 318, 128, 14, MUTED, 0);
+    self.canvas.text("GITHUB PAGES SOURCE", 318, 128, 14, MUTED, 0);
     self.canvas.rect(rect(314, 158, 922, 62), ELEVATED, 9);
     self.canvas.clip(rect(332, 172, 690, 34));
     let state = self.state;
@@ -466,7 +466,7 @@ impl View<'_> {
     let message = if !status.message.is_empty() {
       &status.message
     } else if repository.is_empty() {
-      "Set a public GitHub repository to publish and receive releases."
+      "Set a public repository with a Wodex GitHub Pages version feed."
     } else {
       "Check for a new version before downloading."
     };

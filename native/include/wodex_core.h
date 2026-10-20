@@ -26,11 +26,12 @@ char* wodex_call(WodexCore* core, const char* command_json);
 char* wodex_feed(WodexCore* core, const uint8_t* data, size_t len);
 void wodex_string_free(char* value);
 
-/* Inspect bounded public GitHub release metadata. No network operation occurs.
- * Returns JSON: {ok, available, release?: {version, download_url, size, sha256,
- * notes}}. Only newer stable versions with an uploaded wodex.nro asset and a
- * SHA-256 digest are accepted. Returned strings use wodex_string_free. */
-char* wodex_update_inspect(const char* release_json, const char* current_version);
+/* Inspect a bounded GitHub Pages version feed for the configured repository.
+ * Returns JSON: {ok, available, build?: {version, download_url, size, sha256,
+ * notes}}. Only newer major.minor.patch versions with the exact project Pages
+ * artifact URL and a SHA-256 digest are accepted. No network operation occurs.
+ * Returned strings use wodex_string_free. */
+char* wodex_update_inspect(const char* feed_json, const char* current_version, const char* repository);
 
 /* Streaming SHA-256. finish returns an owned lowercase hexadecimal string and
  * does not free the hash object. Repeated finish calls return the same digest;

@@ -1,41 +1,75 @@
-# Updates
+# Updates and build channels
 
-Wodex supports manually requested updates from a public GitHub repository. No release repository is configured by default. Enter `old-new-things/wodex` in Settings to use this project's [published releases](https://github.com/old-new-things/wodex/releases). The first update check requires a published stable release; CI artifacts can be installed manually. Wodex does not need a GitHub token or an account login.
+Wodex publishes downloads through [GitHub Pages](https://old-new-things.github.io/wodex/). There are two channels: timestamped **Nightly** builds and explicitly tagged **Versions**. GitHub Releases are not created. Downloads and update checks need no GitHub token or account login.
+
+The app's update source is unset by default. Enter `old-new-things/wodex` in Settings to use this project's version feed. Automatic selection is limited to the Versions channel; download and install nightlies manually from the page.
 
 ## Install an update
 
 1. Open Settings → Updates and choose **Check for updates**.
-2. Review the newer stable version, then choose **Download**.
-3. Wait for the download and verification to complete. Choose **Install and exit** to replace the running NRO.
+2. Review the newer version, then choose **Download**.
+3. Wait for verification to complete. Choose **Install and exit** to replace the running NRO.
 4. Launch Wodex again from hbmenu. Installation exits the app; it does not restart it automatically.
 
-Checks use GitHub's latest published stable release. Wodex requires a regular `X.Y.Z` version, optionally prefixed with `v`, that is newer than the installed version, one uploaded asset named exactly `wodex.nro`, an advertised size no larger than 128 MiB, and GitHub's `sha256:` asset digest. Drafts, prereleases, unsupported tags, missing digests and malformed release metadata are rejected. The download must match both the advertised byte count and SHA-256 before it becomes installable. The attached `.sha256` text file supports manual verification; the app uses the digest in the GitHub API response.
+The app reads `https://old-new-things.github.io/wodex/updates/stable.json` when configured for this repository. The feed uses `schema_version: 1`, `channel: "version"` and a required `build` field. Before the first explicit version is published, `build` is `null` and the app reports no newer version. Otherwise it contains:
 
-Checking and downloading do not replace the application. Installing targets the actual SD-card NRO path supplied by the homebrew loader in `argv[0]`, rather than assuming a fixed installation folder. A missing or unsupported executable path disables installation and leaves manual copying available.
+```json
+{
+  "schema_version": 1,
+  "channel": "version",
+  "build": {
+    "version": "0.2.0",
+    "url": "https://old-new-things.github.io/wodex/builds/version/0.2.0/wodex.nro",
+    "size": 26000000,
+    "sha256": "<64 hexadecimal characters>",
+    "notes": "Wodex 0.2.0."
+  }
+}
+```
+
+The size and digest above are illustrative. Publication generates the real values from the verified NRO.
+
+Wodex accepts only a newer canonical `X.Y.Z` version, a size from the minimum NRO header through 128 MiB, and a valid SHA-256 digest. The URL must match the configured project's exact HTTPS Pages path for that version. Unknown schema fields, malformed metadata, nightly feeds and redirects are rejected. The download must match both the advertised byte count and SHA-256 and pass NRO/ASET/RomFS validation before it becomes installable. The adjacent `.sha256` text file supports manual verification; the app uses the digest in the version feed.
+
+Checking and downloading do not replace the application. Installing targets the actual SD-card NRO path supplied by the homebrew loader in `argv[0]`. A missing or unsupported executable path disables installation and leaves manual copying available. Desktop builds can check the version feed; self-installation is supported on Switch.
 
 ## Installation and recovery
 
-The app finishes its UI and network shutdown and unmounts RomFS before replacing the NRO. It retains the previous executable beside the destination as a `.previous.nro` backup. Conversations and API settings remain in the application's data directory.
+The app saves conversations, finishes its UI and network shutdown, and unmounts RomFS before replacing the NRO. It retains the previous executable beside the destination as a `.previous.nro` backup. Conversations and API settings remain in the application's data directory. A normal exit never installs a staged update.
 
 SD-card FAT filesystems cannot atomically replace an existing destination with the same guarantees as a desktop filesystem. Installation therefore has a short rename gap between moving the old executable aside and putting the verified download in its place. Keep power connected during installation. If power is lost in that gap, use a computer or SD-card file manager to rename the previous NRO back to the original application filename, or manually copy a verified `wodex.nro` there. Then launch it from hbmenu. The app cannot repair its own missing launch file before it is launched.
 
-If downloading, digest validation or staging fails, the installed application is left in place. A failed install attempts to restore the previous executable; retain the backup until the new version has been launched successfully. If an update source is unavailable or not configured, the existing app remains usable and installation by copying the NRO continues to work.
+If downloading, digest validation or staging fails, the installed application is left in place. Installation rechecks the staged file before replacement, and a failed install attempts to restore the previous executable. Retain the backup until the new version has been launched successfully. If the update source is unavailable or not configured, the existing app remains usable and installation by copying the NRO continues to work.
 
-## Publish compatible releases
+TLS and SHA-256 protect transfer integrity relative to the selected feed. The repository's publisher remains trusted to provide executable updates.
 
-`VERSION` is the canonical application version. Both the desktop version string and Switch NACP metadata are built from it. It must contain one stable `X.Y.Z` version of at most 15 ASCII characters, without leading zeroes in a component. Stable publishing tags use `v` followed by that exact version, such as `v0.2.0` for a `VERSION` file containing `0.2.0`.
+## Publish nightly and version builds
 
-The [stable-release workflow](https://github.com/old-new-things/wodex/actions/workflows/release.yml) runs when a `v*` tag is pushed or when **Publish stable Switch release** is manually dispatched with an existing tag. Ordinary branch pushes run CI and upload build artifacts. To publish the version recorded in `VERSION`, commit its changes to `main`, push `main`, then create and push the matching tag:
+The [build workflow](https://github.com/old-new-things/wodex/actions/workflows/build.yml) runs Rust checks, all desktop integration suites, the Switch build and updater tests using the packaged NRO before publication. The Switch build uses `devkitpro/devkita64:20260219` and Rust `nightly-2026-10-01`.
+
+Successful `main` pushes publish nightlies. A daily run at **00:17 UTC** and manual runs on `main` use the same checks and channel. Nightly paths contain the UTC workflow-attempt timestamp and abbreviated source commit, for example `builds/nightly/20261020T001700Z-0123456/`. Other branches and pull requests upload CI artifacts without changing the download site.
+
+`VERSION` is the canonical application version, used by both the desktop version string and Switch NACP metadata. It must contain one `X.Y.Z` version of at most 15 ASCII characters, without leading zeroes in a component. An explicit version is published by pushing a tag containing `v` followed by that exact value. The tagged commit must already be reachable from `main`.
+
+After committing and pushing the version's source to `main`, create and push its tag:
 
 ```sh
 git tag "v$(cat VERSION)"
 git push origin "v$(cat VERSION)"
 ```
 
-The workflow validates the strict stable tag against the tagged `VERSION`, runs the native and Rust checks, builds with `devkitpro/devkita64:20260219` and Rust `nightly-2026-10-01`, and tests update installation with the packaged NRO. It uploads `wodex.nro`, `wodex.nro.sha256`, the application license, third-party notices, a checksummed `licenses.tar.gz` bundle, and Noto font license/attribution. The font and its notices also remain embedded in the NRO.
+For example, `v0.2.0` publishes to `builds/version/0.2.0/`. The version feed selects the highest published semantic version. Publishing an older tag does not downgrade that selection. An existing version cannot be assigned different download bytes, even after its downloadable files have been pruned; retained digest records enforce this. Increment `VERSION` before publishing changed files.
 
-Merge workflow changes into the repository's default branch before tagging a release that contains them. GitHub's default Actions token cannot publish a commit whose workflow files differ from the default branch without additional workflow permissions.
+Each build includes `wodex.nro`, its checksum, `VERSION`, the application license, third-party notices, a checksummed `licenses.tar.gz`, and Noto font license/attribution. The font and its notices also remain embedded in the NRO. Generated publication metadata omits developer identities, personal paths and GitHub actor fields; required upstream license credits remain. Public GitHub activity, including workflow runs and pushes, can still identify accounts; this publication method does not provide account anonymity.
 
-Publishing is a separate job with write permission. It creates a draft for an already-existing tag, verifies GitHub's uploaded asset size and SHA-256 against the local artifact, then publishes it as a regular stable release. GitHub determines the latest release using its stable-version policy. An upload or verification failure leaves a draft instead of exposing an incomplete update. Inspect and remove a failed draft before rerunning; the workflow does not overwrite an existing release or create a missing tag.
+## Publication state and recovery
 
-The release metadata and digest fields follow GitHub's [release API](https://docs.github.com/en/rest/releases/releases) and [release asset API](https://docs.github.com/en/rest/releases/assets). TLS and the digest protect transfer integrity against the selected release metadata; the repository owner remains the trusted publisher of executable updates.
+Publication is serialized so each job restores the last successfully deployed Pages snapshot before adding its build. The host Rust publisher verifies the restored catalog and every retained file, generates the complete replacement site, and uploads it for deployment. The publisher is a separate `std` tool; the Switch application remains `no_std` plus `alloc`.
+
+The site retains up to seven newest nightlies and ten highest versions. A 450 MiB download budget may remove additional older builds while preserving the newest build in each channel. Version digest records survive pruning.
+
+Recovery snapshots are stored as attempt-specific Actions artifacts. After a successful deployment, cleanup keeps the current and preceding snapshots, each with 90-day retention; successful daily publications refresh this history. Restoration accepts only snapshots from this repository's authorized build workflow with a successful Pages deployment step. A later cleanup failure does not invalidate an otherwise successful deployment.
+
+If the latest deployed snapshot has expired, restoration fails. If no trusted snapshot exists but a live catalog does, publication also fails instead of resetting the site and losing its history or version locks. Recover the complete snapshot from a trusted backup and reconcile it with the live catalog before resuming publication. Do not remove the live catalog to bypass this guard. Existing public downloads remain available while publication is stopped.
+
+Daily jobs depend on GitHub's scheduler. Public-repository schedules can be disabled after 60 days without repository activity, so long inactivity can eventually require publication-state recovery. See [GitHub's schedule behavior](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule).

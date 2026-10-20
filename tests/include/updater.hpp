@@ -30,7 +30,7 @@ struct PendingUpdate {
 
 class Updater {
 public:
-  // An empty target enables release checking without executable replacement.
+  // An empty target enables version checking without executable replacement.
   // Tests may supply an explicit HTTP loopback origin. Canonical HTTPS GitHub
   // URLs then map to origin/<host>/<path>; production leaves this argument empty.
   Updater(std::string current_version, std::string target_path, std::string test_api_base = "");

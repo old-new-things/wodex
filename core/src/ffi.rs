@@ -1,5 +1,5 @@
 use crate::state::{WodexCore, MAX_COMMAND_BYTES, MAX_FEED_BYTES, MAX_SAVED_BYTES};
-use crate::update::{self, WodexSha256, MAX_NRO_BYTES, MAX_RELEASE_BYTES, MAX_VERSION_BYTES};
+use crate::update::{self, WodexSha256, MAX_NRO_BYTES, MAX_UPDATE_BYTES, MAX_VERSION_BYTES};
 use alloc::{boxed::Box, ffi::CString};
 use core::{ffi::c_char, slice, str};
 
@@ -87,18 +87,20 @@ pub unsafe extern "C" fn wodex_string_free(value: *mut c_char) {
 
 #[no_mangle]
 pub unsafe extern "C" fn wodex_update_inspect(
-  release_json: *const c_char,
+  feed_json: *const c_char,
   current_version: *const c_char,
+  repository: *const c_char,
 ) -> *mut c_char {
-  let (Ok(release), Ok(current)) = (
-    bounded_text(release_json, MAX_RELEASE_BYTES),
+  let (Ok(feed), Ok(current), Ok(repository)) = (
+    bounded_text(feed_json, MAX_UPDATE_BYTES),
     bounded_text(current_version, MAX_VERSION_BYTES),
+    bounded_text(repository, 140),
   ) else {
     return result_string(serde_json::json!({
       "ok":false,"available":false,"error":"Invalid, missing, or oversized update metadata."
     }));
   };
-  result_string(update::inspect(release, current))
+  result_string(update::inspect(feed, current, repository))
 }
 
 #[no_mangle]
@@ -148,7 +150,6 @@ pub unsafe extern "C" fn wodex_nro_validate(
 #[cfg(test)]
 mod tests {
   use super::*;
-  use alloc::format;
   use core::ffi::CStr;
 
   #[test]
@@ -175,21 +176,38 @@ mod tests {
   #[test]
   fn update_and_hash_ffi_preserve_ownership_and_reject_invalid_inputs() {
     unsafe {
-      let metadata = CString::new(format!("{{\"tag_name\":\"v0.2.0\",\"draft\":false,\"prerelease\":false,\"assets\":[{{\"name\":\"wodex.nro\",\"state\":\"uploaded\",\"size\":1000,\"browser_download_url\":\"https://github.com/example/wodex/releases/download/v0.2.0/wodex.nro\",\"digest\":\"sha256:{}\"}}]}}", "ab".repeat(32))).unwrap();
+      let metadata = CString::new(
+        serde_json::json!({
+          "schema_version":1,"channel":"version","build":{
+            "version":"0.2.0","size":1000,"notes":"Version 0.2.0",
+            "url":"https://example.github.io/wodex/builds/version/0.2.0/wodex.nro",
+            "sha256":"ab".repeat(32)
+          }
+        })
+        .to_string(),
+      )
+      .unwrap();
+      let repository = CString::new("example/wodex").unwrap();
       let current = CString::new("0.1.0").unwrap();
-      let response = wodex_update_inspect(metadata.as_ptr(), current.as_ptr());
+      let response = wodex_update_inspect(metadata.as_ptr(), current.as_ptr(), repository.as_ptr());
       let parsed: serde_json::Value =
         serde_json::from_slice(CStr::from_ptr(response).to_bytes()).unwrap();
       assert_eq!(parsed["available"], true);
-      assert_eq!(parsed["release"]["version"], "0.2.0");
+      assert_eq!(parsed["build"]["version"], "0.2.0");
       wodex_string_free(response);
-      let invalid = wodex_update_inspect(core::ptr::null(), current.as_ptr());
+      let invalid = wodex_update_inspect(core::ptr::null(), current.as_ptr(), repository.as_ptr());
+      let parsed: serde_json::Value =
+        serde_json::from_slice(CStr::from_ptr(invalid).to_bytes()).unwrap();
+      assert_eq!(parsed["ok"], false);
+      wodex_string_free(invalid);
+      let invalid = wodex_update_inspect(metadata.as_ptr(), current.as_ptr(), core::ptr::null());
       let parsed: serde_json::Value =
         serde_json::from_slice(CStr::from_ptr(invalid).to_bytes()).unwrap();
       assert_eq!(parsed["ok"], false);
       wodex_string_free(invalid);
       let bad_utf8 = [0xff_u8, 0];
-      let invalid = wodex_update_inspect(bad_utf8.as_ptr().cast(), current.as_ptr());
+      let invalid =
+        wodex_update_inspect(bad_utf8.as_ptr().cast(), current.as_ptr(), repository.as_ptr());
       let parsed: serde_json::Value =
         serde_json::from_slice(CStr::from_ptr(invalid).to_bytes()).unwrap();
       assert_eq!(parsed["ok"], false);

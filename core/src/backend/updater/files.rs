@@ -249,7 +249,7 @@ pub(super) fn verify_stage(fs: &Fs, pending: &PendingUpdate) -> Result<(), Strin
     }
   }
   if hash.finish() != pending.sha256 {
-    return Err("The update checksum does not match the published release.".into());
+    return Err("The update checksum does not match the published version.".into());
   }
   validate_nro(&mut file, size, true)
 }

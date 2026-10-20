@@ -210,7 +210,7 @@ fn failed_request_start_preserves_draft_and_does_not_leave_streaming_state() {
 }
 
 #[test]
-fn changing_release_source_invalidates_previous_download_and_install_actions() {
+fn changing_version_source_invalidates_previous_download_and_install_actions() {
   let mut app = app();
   app.host.update_supported = true;
   set_repository(&mut app, "first/wodex");

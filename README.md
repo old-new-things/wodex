@@ -4,13 +4,13 @@
 
 A native DeepSeek chat client for Nintendo Switch homebrew, with a desktop build for development. Inspired by wiliwili's controller navigation and readable handheld interface.
 
-The app streams replies, saves conversations, supports thinking mode, includes a Chinese-capable font, and uses the Switch system keyboard. It also checks for verified releases and can replace its Switch NRO on exit. A real ARM64 `.nro` has been cross-compiled and linked. Physical Switch testing and a live request with your own DeepSeek key are still required.
+The app streams replies, saves conversations, supports thinking mode, includes a Chinese-capable font, and uses the Switch system keyboard. It also checks for newer versioned builds and can replace its verified Switch NRO on exit. A real ARM64 `.nro` has been cross-compiled and linked. Physical Switch testing and a live request with your own DeepSeek key are still required.
 
 ![Desktop preview](docs/preview.png)
 
 ## Use on Switch
 
-1. Download `wodex.nro` from a [release](https://github.com/old-new-things/wodex/releases), or extract the `wodex-switch` artifact from a successful [CI run](https://github.com/old-new-things/wodex/actions/workflows/build.yml). Copy it to `sdmc:/switch/wodex/wodex.nro`. Local builds produce `build/switch/wodex.nro`.
+1. Download `wodex.nro` from the [Nightly or Versions channel](https://old-new-things.github.io/wodex/). Copy it to `sdmc:/switch/wodex/wodex.nro`. Local builds produce `build/switch/wodex.nro`.
 2. Launch hbmenu with full application memory through your homebrew environment. For a typical title-override setup, hold **R** while launching a game, then select Wodex.
 3. Open **Settings**, enter your [DeepSeek API key](https://platform.deepseek.com/), and return to chat.
 4. Press **X** to write, confirm the keyboard, then select **Send**.
@@ -77,7 +77,9 @@ bash scripts/build-switch.sh
 
 Required SDK packages: `switch-dev`, `switch-sdl2`, `switch-sdl2_ttf`, `switch-curl`, and `switch-pkg-config`. Output: `build/switch/wodex.nro`.
 
-The verified SDK image is `devkitpro/devkita64:20260219`. [Architecture and build details](docs/architecture.md) include the exact two-stage commands used to build the NRO on a host with Rust and a container engine. [GitHub Actions](https://github.com/old-new-things/wodex/actions/workflows/build.yml) checks Rust formatting, lints and tests, builds and tests the desktop client, builds the Switch NRO, and exercises update installation using that NRO. Successful runs provide a `wodex-switch` artifact with the NRO, checksum and license notices. CI artifacts require a GitHub login to download; published release assets are public downloads.
+The verified SDK image is `devkitpro/devkita64:20260219`. [Architecture and build details](docs/architecture.md) include the exact two-stage commands used to build the NRO on a host with Rust and a container engine. [GitHub Actions](https://github.com/old-new-things/wodex/actions/workflows/build.yml) checks Rust formatting, lints and tests, builds and tests the desktop client, builds the Switch NRO, and exercises update installation using that NRO.
+
+Successful `main` builds publish timestamped nightlies to [GitHub Pages](https://old-new-things.github.io/wodex/), also scheduled daily at 00:17 UTC. Explicit `vX.Y.Z` tags publish fixed version downloads after the same checks. The site retains up to seven nightlies and ten versions, with public downloads, checksums and license notices; no GitHub login is needed. GitHub Releases are not used. Other branches and pull requests produce CI artifacts without publishing the site.
 
 ## Data and behavior
 
@@ -100,11 +102,11 @@ SDL_ttf/FreeType reads UTF-8 text using the font's stream API; Wodex does not ma
 
 ## Self-updates
 
-Open **Settings → Updates**, set the release source to `old-new-things/wodex`, then choose **Check for updates**, **Download**, and **Install and exit**. The release source is unset by default. Checks are manual and require a newer published stable release; CI artifacts are available for manual installation. Desktop builds can check release metadata; self-installation is supported on Switch.
+Open **Settings → Updates**, set the update source to `old-new-things/wodex`, then choose **Check for updates**, **Download**, and **Install and exit**. The source is unset by default. Checks are manual and follow the Pages **Versions** channel. Nightlies are downloaded and installed manually. Desktop builds can check the version feed; self-installation is supported on Switch.
 
-Wodex downloads a newer stable `wodex.nro` to a sibling temporary file and verifies the release's advertised size, SHA-256, executable headers and embedded assets. Installing saves conversations, closes the interface and embedded resources, preserves a launchable `.previous.nro`, and replaces the actual NRO path supplied by the loader. Reopen Wodex from hbmenu afterward. A normal exit never installs a downloaded update.
+Wodex downloads a newer version's `wodex.nro` to a sibling temporary file and verifies the feed's advertised size, SHA-256, executable headers and embedded assets. Installing saves conversations, closes the interface and embedded resources, preserves a launchable `.previous.nro`, and replaces the actual NRO path supplied by the loader. Reopen Wodex from hbmenu afterward. A normal exit never installs a downloaded update.
 
-The SD-card replacement uses two renames, so power interruption can require restoring the `.previous.nro` backup manually. [Update and recovery instructions](docs/updates.md) explain that boundary and the included GitHub release workflow. No repository or release is published by local builds.
+The SD-card replacement uses two renames, so power interruption can require restoring the `.previous.nro` backup manually. [Update and recovery instructions](docs/updates.md) explain that boundary, both build channels, and publication recovery.
 
 ## Verify
 
@@ -112,20 +114,22 @@ The SD-card replacement uses two renames, so power interruption can require rest
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
+python3 -m unittest discover -s tests -p 'test_pages_state.py'
 cmake --build build/desktop --parallel
 ctest --test-dir build/desktop --output-on-failure
 ```
 
-The integration tests start isolated loopback mock servers. They drive the Rust application through SDL input and the Rust network backend's real curl bindings, and test fragmented UTF-8 streams, reasoning, usage, retry, HTTP errors, cancellation, queue limits, and durable storage. Update tests exercise the Rust updater's downloads, checksums, release source restrictions, cancellation, backup preservation and rollback failures. Rust fault-injection tests cover short/interrupted writes, failed flushes, save rotation and rollback. Font tests exercise the production Rust renderer with real Chinese and mixed-language fonts; UI smoke tests render chat and update pages. No tests require a real API key or spend API credits.
+The integration tests start isolated loopback mock servers. They drive the Rust application through SDL input and the Rust network backend's real curl bindings, and test fragmented UTF-8 streams, reasoning, usage, retry, HTTP errors, cancellation, queue limits, and durable storage. Update tests exercise the Rust updater's downloads, checksums, Pages source restrictions, cancellation, backup preservation and rollback failures. Rust fault-injection tests cover short/interrupted writes, failed flushes, save rotation and rollback. Font tests exercise the production Rust renderer with real Chinese and mixed-language fonts; UI smoke tests render chat and update pages. Publication tests cover artifact integrity, immutable versions, retention, archive extraction and deployment-state recovery. No tests require a real API key or spend API credits.
 
 ## Source map
 
 - `core/src/app/`: Rust views, editor, text layout/cache, platform interfaces, and tests.
 - `core/src/app.rs`: Rust application actions, navigation, chat/update coordination, and saving.
 - `core/src/backend/`: Rust HTTP policy, workers, streaming queues, durable storage, font selection, updater, installation and rollback.
-- `core/src/`: conversation state, validation, persistence model, SSE parser, release validation, and C ABI.
+- `core/src/`: conversation state, validation, persistence model, SSE parser, version-feed validation, and C ABI.
 - `native/`: SDL/TTF, libnx, POSIX filesystem, curl and thread/mutex bindings, input normalization, and process lifecycle.
 - `scripts/`: desktop dependency fallback and Switch build.
+- `tools/publish-pages/`: host-only Rust publisher for the static download page and update feed.
 - `tests/`: integration suites, local mock APIs, and test-only C++ facades that call the production Rust backends.
 - `romfs/`: bundled CJK font, license/attribution, and public CA certificates.
 

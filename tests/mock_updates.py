@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise GitHub update checks and downloads without external network access."""
+"""Exercise GitHub Pages update checks and downloads without external network access."""
 
 import hashlib
 import http.server
@@ -56,7 +56,7 @@ class Server(http.server.ThreadingHTTPServer):
     super().__init__(("127.0.0.1", 0), Handler)
     self.failures = []
     self.lock = threading.Lock()
-    self.redirected_downloads = 0
+    self.direct_downloads = 0
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -82,8 +82,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
       assert self.headers.get("Cookie") is None, "Updater sent a cookie"
       parsed = urllib.parse.urlsplit(self.path)
       parts = parsed.path.strip("/").split("/")
-      if len(parts) == 6 and parts[:3] == ["api.github.com", "repos", "fixture"] and parts[4:] == ["releases", "latest"]:
-        scenario = parts[3]
+      assert not parsed.query and not parsed.fragment, "Update URL contained a query or fragment"
+      if len(parts) == 4 and parts[0] == "fixture.github.io" and parts[2:] == ["updates", "stable.json"]:
+        scenario = parts[1]
         if scenario == "http-error":
           self.reply(503, b"private-update-body")
           return
@@ -91,29 +92,44 @@ class Handler(http.server.BaseHTTPRequestHandler):
           self.reply(200, b"private-update-body invalid JSON")
           return
         if scenario == "oversized-metadata":
-          self.reply(200, b"x" * (2 * 1024 * 1024 + 1))
+          self.reply(200, b"x" * (1024 * 1024 + 1))
+          return
+        if scenario == "manifest-redirect":
+          self.reply(302, b"private-update-body", location="https://fixture.github.io/good/updates/stable.json")
           return
         payload = asset(scenario)
         size = len(payload) + (1 if scenario == "short" else -1 if scenario == "long" else 0)
         sha256 = "0" * 64 if scenario == "hash" else hashlib.sha256(payload).hexdigest()
-        release = {
-          "tag_name": "v0.3.0", "draft": False, "prerelease": False,
-          "body": "Verified mock update\n包含字体",
-          "assets": [{
-            "name": "wodex.nro", "state": "uploaded", "size": size,
-            "browser_download_url": "https://github.com/fixture/" + ("good" if scenario == "wrong-repository" else scenario) + "/releases/download/v0.3.0/wodex.nro",
-            "digest": "sha256:" + sha256,
-          }],
+        metadata = {
+          "schema_version": 1, "channel": "version",
+          "build": {
+            "version": "0.3.0", "size": size, "notes": "Verified mock update\n包含字体",
+            "url": "https://fixture.github.io/" + ("good" if scenario == "wrong-repository" else scenario) + "/builds/version/0.3.0/wodex.nro",
+            "sha256": sha256,
+          },
         }
-        self.reply(200, json.dumps(release, ensure_ascii=False).encode("utf-8"))
-      elif len(parts) == 7 and parts[:2] == ["github.com", "fixture"] and parts[3:] == ["releases", "download", "v0.3.0", "wodex.nro"]:
-        scenario = parts[2]
+        if scenario == "empty":
+          metadata["build"] = None
+        if scenario == "nightly-feed":
+          metadata["channel"] = "nightly"
+        if scenario == "unknown-schema":
+          metadata["schema_version"] = 2
+        if scenario == "missing-checksum":
+          del metadata["build"]["sha256"]
+        if scenario == "missing-build":
+          del metadata["build"]
+        if scenario == "wrong-owner":
+          metadata["build"]["url"] = "https://elsewhere.github.io/wrong-owner/builds/version/0.3.0/wodex.nro"
+        self.reply(200, json.dumps(metadata, ensure_ascii=False).encode("utf-8"))
+      elif len(parts) == 6 and parts[0] == "fixture.github.io" and parts[2:] == ["builds", "version", "0.3.0", "wodex.nro"]:
+        scenario = parts[1]
         redirects = {
           "bad-redirect": "https://untrusted.example/private-update-body",
-          "http-redirect": "http://github.com/fixture/good/releases/download/v0.3.0/wodex.nro",
-          "credentials-redirect": "https://user:password@github.com/fixture/good/releases/download/v0.3.0/wodex.nro",
-          "loop": "https://github.com/fixture/loop/releases/download/v0.3.0/wodex.nro",
-          "good": "https://release-assets.githubusercontent.com/assets/good?signature=mock-query",
+          "http-redirect": "http://fixture.github.io/good/builds/version/0.3.0/wodex.nro",
+          "credentials-redirect": "https://user:password@fixture.github.io/good/builds/version/0.3.0/wodex.nro",
+          "loop": "https://fixture.github.io/loop/builds/version/0.3.0/wodex.nro",
+          "same-project-redirect": "/same-project-redirect/builds/version/0.3.0/other.nro",
+          "cross-project-redirect": "https://fixture.github.io/good/builds/version/0.3.0/wodex.nro",
         }
         if scenario in redirects:
           self.reply(302, b"private-update-body", location=redirects[scenario])
@@ -130,12 +146,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             time.sleep(0.05)
           self.close_connection = True
         else:
+          if scenario == "good":
+            with self.server.lock:
+              self.server.direct_downloads += 1
           self.reply(200, asset(scenario), "application/octet-stream")
-      elif parsed.path == "/release-assets.githubusercontent.com/assets/good":
-        assert parsed.query == "signature=mock-query", "The allowed redirect lost its signed query"
-        with self.server.lock:
-          self.server.redirected_downloads += 1
-        self.reply(200, asset("good"), "application/octet-stream")
       else:
         raise AssertionError("A disallowed host, path, or traversal reached the update server")
     except (BrokenPipeError, ConnectionResetError):
@@ -167,8 +181,8 @@ def main():
   if server.failures:
     print("Update mock validation failed: " + "; ".join(server.failures), file=sys.stderr)
     return 1
-  if result.returncode == 0 and server.redirected_downloads != 2:
-    print("The expected allowed release-asset redirects were not followed.", file=sys.stderr)
+  if result.returncode == 0 and server.direct_downloads != 2:
+    print("The expected version artifacts were not downloaded directly from the project Pages paths.", file=sys.stderr)
     return 1
   return result.returncode
 

@@ -7,7 +7,6 @@ export DEVKITA64="${DEVKITA64:-${DEVKITPRO}/devkitA64}"
 export PATH="${DEVKITA64}/bin:${DEVKITPRO}/tools/bin:${PATH}"
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-${project_root}/target}"
 
-toolchain="${WODEX_RUST_TOOLCHAIN:-nightly-2026-10-01}"
 target="aarch64-nintendo-switch-freestanding"
 pkg_config="${DEVKITPRO}/portlibs/switch/bin/aarch64-none-elf-pkg-config"
 jobs="${WODEX_BUILD_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf '4\n')}"
@@ -50,22 +49,10 @@ for resource_path in \
   fi
 done
 
-if ! rustup run "${toolchain}" rustc --version >/dev/null 2>&1; then
-  printf 'Install the Rust build toolchain: rustup toolchain install %s --profile minimal --component rust-src\n' "${toolchain}" >&2
-  exit 1
-fi
-
 # libnx owns process startup and the final link. Rust contributes a PIC static
 # library, with only core/alloc and the C allocator supplied by the native shell.
-export RUSTFLAGS="${RUSTFLAGS:+${RUSTFLAGS} }-C relocation-model=pic -C target-cpu=cortex-a57"
+bash "${project_root}/scripts/build-core-switch.sh"
 cd "${project_root}"
-cargo "+${toolchain}" build \
-  -Zbuild-std=core,alloc,compiler_builtins \
-  --locked \
-  --release \
-  --no-default-features \
-  --target "${target}" \
-  --package wodex-core
 
 make -f scripts/Makefile.switch -j "${jobs}" \
   RUST_LIB="${CARGO_TARGET_DIR}/${target}/release/libwodex_core.a"

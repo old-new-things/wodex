@@ -140,7 +140,7 @@ impl<H: Host> App<H> {
       && self.core.state().settings.update_repository != self.checked_repository
     {
       status = UpdateStatus {
-        message: "Check this release source before downloading an update.".into(),
+        message: "Check this version source before downloading an update.".into(),
         ..Default::default()
       };
     }

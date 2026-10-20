@@ -1,4 +1,4 @@
-//! GitHub update orchestration, bounded download verification and installation.
+//! GitHub Pages update orchestration, bounded download verification and installation.
 //! This module is shared by desktop and the no_std Switch build. Native code
 //! supplies only individual HTTP, filesystem, thread and mutex operations.
 mod files;
@@ -20,7 +20,7 @@ use super::{
 
 pub use files::{install_update, install_update_with_rename};
 
-const MAX_RELEASE_SIZE: u64 = 2 * 1024 * 1024;
+const MAX_UPDATE_SIZE: u64 = update::MAX_UPDATE_BYTES as u64;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct PendingUpdate {
@@ -32,7 +32,7 @@ pub struct PendingUpdate {
 }
 
 #[derive(Clone, Deserialize)]
-struct Release {
+struct PublishedVersion {
   version: String,
   download_url: String,
   size: u64,
@@ -44,7 +44,7 @@ struct Release {
 struct State {
   status: UpdateStatus,
   pending: Option<PendingUpdate>,
-  release: Option<Release>,
+  build: Option<PublishedVersion>,
 }
 
 struct Worker {
@@ -110,13 +110,13 @@ impl Updater {
   }
 
   pub fn check(&mut self, repository: &str) -> Result<(), String> {
-    self.prepare(UpdatePhase::Checking, "Checking the configured GitHub repository…")?;
+    self.prepare(UpdatePhase::Checking, "Checking the configured GitHub Pages version feed…")?;
     {
       let mut state = self.shared.state.lock();
       if let Some(pending) = state.pending.take() {
         let _ = self.shared.fs.remove(&pending.staged_path, true);
       }
-      state.release = None;
+      state.build = None;
       state.status.version.clear();
       state.status.notes.clear();
       state.status.total = 0;
@@ -136,12 +136,12 @@ impl Updater {
       if self.active() {
         return Err("An update operation is already running.".into());
       }
-      if state.status.phase != UpdatePhase::Available || state.release.is_none() {
+      if state.status.phase != UpdatePhase::Available || state.build.is_none() {
         state.status.phase = UpdatePhase::Error;
         state.status.message = "Check for an available update before downloading.".into();
         return Ok(());
       }
-      state.release.clone().unwrap()
+      state.build.clone().unwrap()
     };
     self.prepare(UpdatePhase::Downloading, "Downloading and verifying the update…")?;
     let shared = self.shared.clone();
@@ -197,64 +197,52 @@ impl Worker {
   }
 
   fn inspect(&self, repository: &str) {
-    match self.inspect_release(repository) {
-      Ok(Some(release)) => {
+    match self.inspect_build(repository) {
+      Ok(Some(build)) => {
         {
           let mut state = self.state.lock();
-          state.status.version = release.version.clone();
-          state.status.notes = release.notes.clone();
-          state.status.total = release.size;
-          state.release = Some(release);
+          state.status.version = build.version.clone();
+          state.status.notes = build.notes.clone();
+          state.status.total = build.size;
+          state.build = Some(build);
         }
-        self.finish(UpdatePhase::Available, "A newer verified release is available.");
+        self.finish(UpdatePhase::Available, "A newer version is available to download and verify.");
       }
-      Ok(None) => self.finish(UpdatePhase::Current, "You are running the latest release."),
+      Ok(None) => self.finish(UpdatePhase::Current, "No newer published version is available."),
       Err(WorkError::Cancelled) => self.finish(UpdatePhase::Cancelled, "Update check cancelled."),
       Err(WorkError::Failure(error)) => self.finish(UpdatePhase::Error, &error),
     }
   }
 
-  fn inspect_release(&self, repository: &str) -> Result<Option<Release>, WorkError> {
-    if !update::valid_repository(repository) {
-      return Err(failure("Set the update repository to owner/repository before checking."));
-    }
+  fn inspect_build(&self, repository: &str) -> Result<Option<PublishedVersion>, WorkError> {
+    let base = update::pages_base(repository)
+      .ok_or_else(|| failure("Set the update repository to owner/repository before checking."))?;
     let mut manifest = alloc::vec::Vec::new();
-    self.fetch(
-      &format!("https://api.github.com/repos/{repository}/releases/latest"),
-      MAX_RELEASE_SIZE,
-      &mut |bytes| {
-        manifest.extend_from_slice(bytes);
-        Ok(())
-      },
-    )?;
+    self.fetch(&format!("{base}/updates/stable.json"), MAX_UPDATE_SIZE, &mut |bytes| {
+      manifest.extend_from_slice(bytes);
+      Ok(())
+    })?;
     let manifest = core::str::from_utf8(&manifest)
-      .map_err(|_| failure("The update source returned invalid release metadata."))?;
-    let mut result = update::inspect(manifest, &self.current_version);
+      .map_err(|_| failure("The update source returned invalid version metadata."))?;
+    let mut result = update::inspect(manifest, &self.current_version, repository);
     if result["ok"].as_bool() != Some(true) {
       return Err(failure(
-        result["error"].as_str().unwrap_or("The release does not contain a verified Wodex NRO."),
+        result["error"].as_str().unwrap_or("The build does not contain a verified Wodex NRO."),
       ));
     }
     if result["available"].as_bool() != Some(true) {
       self.check_cancelled()?;
       return Ok(None);
     }
-    let release: Release = serde_json::from_value(result["release"].take())
-      .map_err(|_| failure("Cannot inspect the update release."))?;
-    let asset_url = github_url(&self.http, &release.download_url)?;
-    let prefix = format!("/{}/releases/download/", repository.to_ascii_lowercase());
-    if !asset_url.path.to_ascii_lowercase().starts_with(&prefix) {
-      return Err(failure(
-        "The release asset belongs to a different repository. Check the update source.",
-      ));
-    }
+    let build: PublishedVersion = serde_json::from_value(result["build"].take())
+      .map_err(|_| failure("Cannot inspect the update build."))?;
     self.check_cancelled()?;
-    Ok(Some(release))
+    Ok(Some(build))
   }
 
-  fn transfer(&self, selected: &Release) {
+  fn transfer(&self, selected: &PublishedVersion) {
     let mut created = None;
-    let result = self.download_release(selected, &mut created);
+    let result = self.download_build(selected, &mut created);
     match result {
       Ok(pending) => {
         self.state.lock().pending = Some(pending);
@@ -275,9 +263,9 @@ impl Worker {
     }
   }
 
-  fn download_release(
+  fn download_build(
     &self,
-    selected: &Release,
+    selected: &PublishedVersion,
     created: &mut Option<String>,
   ) -> Result<PendingUpdate, WorkError> {
     let candidate = files::candidate(&self.target_path, &selected.sha256, selected.size)?;
@@ -308,10 +296,10 @@ impl Worker {
       Ok(())
     })?;
     if received != candidate.size {
-      return Err(failure("The downloaded update size does not match the published release."));
+      return Err(failure("The downloaded update size does not match the published build."));
     }
     if hash.finish() != candidate.sha256 {
-      return Err(failure("The update checksum does not match the published release."));
+      return Err(failure("The update checksum does not match the published build."));
     }
     self.check_cancelled()?;
     file.sync().map_err(|_| failure("Cannot flush the update file to storage."))?;
@@ -328,79 +316,61 @@ impl Worker {
     limit: u64,
     sink: &mut dyn FnMut(&[u8]) -> Result<(), String>,
   ) -> Result<(), WorkError> {
-    let mut canonical = String::from(canonical);
-    for redirects in 0..=5 {
-      self.check_cancelled()?;
-      let parsed = github_url(&self.http, &canonical)?;
-      let actual = if self.test_api_base.is_empty() {
-        canonical.clone()
-      } else {
-        let mut mapped = format!("{}/{}{}", self.test_api_base, parsed.host, parsed.path);
-        if !parsed.query.is_empty() {
-          mapped.push('?');
-          mapped.push_str(&parsed.query);
-        }
-        mapped
-      };
-      let request = Request {
-        url: actual,
-        headers: vec!["Accept: application/vnd.github+json, application/octet-stream".into()],
-        body: vec![],
-        ca_bundle: self.ca_bundle.clone(),
-        user_agent: "Wodex-Updater/1".into(),
-        protocols: if self.test_api_base.is_empty() { "https" } else { "http" }.into(),
-        no_proxy: !self.test_api_base.is_empty(),
-        body_status: Some(200),
-        abort_rejected_body: true,
-        ..Request::default()
-      };
-      let mut received = 0u64;
-      let response = self.http.perform(&request, &self.cancelled, &mut |bytes| {
-        if bytes.len() as u64 > limit - received {
-          return Err("The update response exceeds its expected size.".into());
-        }
-        sink(bytes)?;
-        received += bytes.len() as u64;
-        Ok(())
-      })?;
-      let status = response.http_status;
-      if matches!(status, 301 | 302 | 303 | 307 | 308) {
-        if redirects == 5 || response.location.is_empty() {
-          return Err(failure("The update server returned too many or invalid redirects."));
-        }
-        validate_url_text(&response.location)?;
-        let next = self
-          .http
-          .resolve_url(&canonical, &response.location)
-          .map_err(|_| failure("The update server returned an invalid redirect."))?;
-        github_url(&self.http, &next.url)?;
-        canonical = next.url;
-        continue;
+    self.check_cancelled()?;
+    // Both URLs are constructed or checked against an exact project Pages path.
+    // Reject redirects entirely: Pages serves these files directly, and a
+    // redirect must not be able to transfer trust to another host or project.
+    let parsed = pages_url(&self.http, canonical)?;
+    let actual = if self.test_api_base.is_empty() {
+      String::from(canonical)
+    } else {
+      format!("{}/{}{}", self.test_api_base, parsed.host, parsed.path)
+    };
+    let request = Request {
+      url: actual,
+      headers: vec!["Accept: application/json, application/octet-stream".into()],
+      body: vec![],
+      ca_bundle: self.ca_bundle.clone(),
+      user_agent: "Wodex-Updater/1".into(),
+      protocols: if self.test_api_base.is_empty() { "https" } else { "http" }.into(),
+      no_proxy: !self.test_api_base.is_empty(),
+      body_status: Some(200),
+      abort_rejected_body: true,
+      ..Request::default()
+    };
+    let mut received = 0u64;
+    let response = self.http.perform(&request, &self.cancelled, &mut |bytes| {
+      if bytes.len() as u64 > limit - received {
+        return Err("The update response exceeds its expected size.".into());
       }
-      if status != 200 && status != 0 {
-        return Err(failure(&match status {
-          404 => {
-            String::from("No published release was found. Check the configured public repository.")
-          }
-          403 | 429 => {
-            String::from("GitHub's public update rate limit was reached. Try again later.")
-          }
-          _ => format!("The update server returned HTTP {status}. Try again later."),
-        }));
-      }
-      if response.curl_code != 0 {
-        return Err(failure(if response.curl_code == 60 {
-          "The update server's TLS certificate could not be verified."
-        } else {
-          "The update download failed. Check your network and storage, then try again."
-        }));
-      }
-      if status != 200 {
-        return Err(failure("The update server did not return a release."));
-      }
-      return Ok(());
+      sink(bytes)?;
+      received += bytes.len() as u64;
+      Ok(())
+    })?;
+    let status = response.http_status;
+    if matches!(status, 301 | 302 | 303 | 307 | 308) {
+      return Err(failure(
+        "The update server redirected the request. Use the project's direct GitHub Pages URL.",
+      ));
     }
-    Err(failure("The update server returned too many or invalid redirects."))
+    if status != 200 && status != 0 {
+      return Err(failure(&match status {
+        404 => String::from("No version feed was found. Check the project's GitHub Pages setup."),
+        403 | 429 => String::from("The update server refused the request. Try again later."),
+        _ => format!("The update server returned HTTP {status}. Try again later."),
+      }));
+    }
+    if response.curl_code != 0 {
+      return Err(failure(if response.curl_code == 60 {
+        "The update server's TLS certificate could not be verified."
+      } else {
+        "The update download failed. Check your network and storage, then try again."
+      }));
+    }
+    if status != 200 {
+      return Err(failure("The update server did not return the requested file."));
+    }
+    Ok(())
   }
 }
 
@@ -448,20 +418,15 @@ fn parse_url(http: &Http, text: &str) -> Result<UrlParts, String> {
   Ok(parsed)
 }
 
-fn github_url(http: &Http, text: &str) -> Result<UrlParts, String> {
+fn pages_url(http: &Http, text: &str) -> Result<UrlParts, String> {
   let parsed = parse_url(http, text)?;
+  let owner = parsed.host.strip_suffix(".github.io").unwrap_or_default();
   if parsed.scheme != "https"
-    || (!parsed.port.is_empty() && parsed.port != "443")
-    || ![
-      "api.github.com",
-      "github.com",
-      "release-assets.githubusercontent.com",
-      "objects.githubusercontent.com",
-      "github-releases.githubusercontent.com",
-    ]
-    .contains(&parsed.host.as_str())
+    || !parsed.port.is_empty()
+    || parsed.has_query
+    || !update::valid_repository(&format!("{owner}/project"))
   {
-    return Err("Updates may only use verified HTTPS GitHub release servers.".into());
+    return Err("Updates may only use direct HTTPS GitHub Pages project URLs.".into());
   }
   Ok(parsed)
 }

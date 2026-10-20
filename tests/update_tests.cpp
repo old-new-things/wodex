@@ -149,12 +149,12 @@ void test_download(const std::string& base) {
     Updater updater{"0.2.0", directory.path(), base};
     updater.check("fixture/good");
     const auto available = wait(updater);
-    check(available.phase == UpdatePhase::Available && available.version == "0.3.0", "A newer release was not offered.");
-    check(available.notes == "Verified mock update\n包含字体", "Release notes were not retained as UTF-8.");
+    check(available.phase == UpdatePhase::Available && available.version == "0.3.0", "A newer version was not offered.");
+    check(available.notes == "Verified mock update\n包含字体", "Version notes were not retained as UTF-8.");
     updater.download();
     const auto ready = wait(updater);
     check(ready.phase == UpdatePhase::Ready && ready.downloaded == ready.total && ready.total == 4096,
-      "The downloaded release was not fully verified.");
+      "The downloaded version was not fully verified.");
     pending = updater.pending_install();
     check(pending.has_value() && pending->staged_path == directory.path() + ".update.part", "No staged install was prepared.");
     check(read(directory.path()) == old, "Downloading changed the installed executable.");
@@ -175,10 +175,13 @@ void test_download(const std::string& base) {
 void test_check_modes(const std::string& base) {
   Updater current{"0.3.0", "", base};
   current.check("fixture/good");
-  check(wait(current).phase == UpdatePhase::Current, "The current release was incorrectly offered as an upgrade.");
+  check(wait(current).phase == UpdatePhase::Current, "The current version was incorrectly offered as an upgrade.");
+  Updater empty{"0.2.0", "", base};
+  empty.check("fixture/empty");
+  check(wait(empty).phase == UpdatePhase::Current, "An empty version channel offered an update.");
   Updater desktop{"0.2.0", "", base};
   desktop.check("fixture/good");
-  check(wait(desktop).phase == UpdatePhase::Available, "Desktop could not inspect a newer release.");
+  check(wait(desktop).phase == UpdatePhase::Available, "Desktop could not inspect a newer version.");
   desktop.download();
   check(wait(desktop).phase == UpdatePhase::Error && !desktop.pending_install(), "An unknown executable path allowed replacement.");
   for (const std::string repository : {"", "fixture/../escape", "https://github.com/fixture/good", "fixture/good\r\nHeader: value", "bad_owner/repo", "owner--name/repo"}) {
@@ -192,7 +195,7 @@ void test_check_modes(const std::string& base) {
 }
 
 void test_failures(const std::string& base) {
-  for (const std::string scenario : {"hash", "short", "long", "malformed", "aset", "no-assets", "zero-romfs", "romfs-header", "romfs-root", "romfs-data", "bad-redirect", "http-redirect", "credentials-redirect", "loop"}) {
+  for (const std::string scenario : {"hash", "short", "long", "malformed", "aset", "no-assets", "zero-romfs", "romfs-header", "romfs-root", "romfs-data", "bad-redirect", "http-redirect", "credentials-redirect", "loop", "same-project-redirect", "cross-project-redirect"}) {
     TemporaryDirectory directory;
     const auto original = nro(1);
     write(directory.path(), original);
@@ -206,12 +209,12 @@ void test_failures(const std::string& base) {
     check(!std::filesystem::exists(directory.path() + ".update.part"), "A failed download left an unverified partial file.");
     check(failed.message.find("private-update-body") == std::string::npos, "A provider error body reached the UI.");
   }
-  for (const std::string scenario : {"http-error", "bad-json", "oversized-metadata", "wrong-repository"}) {
+  for (const std::string scenario : {"http-error", "bad-json", "oversized-metadata", "wrong-repository", "wrong-owner", "manifest-redirect", "nightly-feed", "unknown-schema", "missing-checksum", "missing-build"}) {
     Updater updater{"0.2.0", "", base};
     updater.check("fixture/" + scenario);
     const auto failed = wait(updater);
     check(failed.phase == UpdatePhase::Error && failed.message.find("private-update-body") == std::string::npos,
-      "Invalid release metadata was accepted or leaked an error body.");
+      "Invalid version metadata was accepted or leaked an error body.");
   }
 }
 
@@ -244,7 +247,7 @@ void test_paths_and_ready_reset(const std::string& base) {
   for (const auto& target : {directory.path("../escape.nro"), directory.path("wodex.previous.nro"), std::string{"wodex.nro"}}) {
     Updater updater{"0.2.0", target, base};
     updater.check("fixture/good");
-    check(wait(updater).phase == UpdatePhase::Available, "Path tests could not inspect the release.");
+    check(wait(updater).phase == UpdatePhase::Available, "Path tests could not inspect the version.");
     updater.download();
     check(wait(updater).phase == UpdatePhase::Error, "An unsafe installation target was accepted.");
   }

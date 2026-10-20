@@ -40,12 +40,10 @@ pub struct Http {
 
 #[derive(Debug, Default, Clone)]
 pub struct UrlParts {
-  pub url: String,
   pub scheme: String,
   pub host: String,
   pub port: String,
   pub path: String,
-  pub query: String,
   pub has_user: bool,
   pub has_password: bool,
   pub has_fragment: bool,
@@ -118,7 +116,6 @@ pub enum HttpError {
 #[derive(Debug, Default)]
 pub struct Response {
   pub http_status: u16,
-  pub location: String,
   pub curl_code: u32,
 }
 
@@ -145,11 +142,7 @@ impl Http {
   }
 
   pub fn parse_url(&self, value: &str) -> Result<UrlParts, String> {
-    self.resolve_url("", value)
-  }
-
-  pub fn resolve_url(&self, base: &str, value: &str) -> Result<UrlParts, String> {
-    let base = CString::new(base).map_err(|_| String::from("Invalid URL."))?;
+    let base = c"";
     let value = CString::new(value).map_err(|_| String::from("Invalid URL."))?;
     let handle = unsafe { (self.api.url_parse)(base.as_ptr(), value.as_ptr()) };
     if handle.is_null() {
@@ -166,12 +159,10 @@ impl Http {
       }
     };
     let parts = UrlParts {
-      url: text(0),
       scheme: text(1),
       host: text(2),
       port: text(3),
       path: text(4),
-      query: text(5),
       has_user: part(6).present,
       has_password: part(7).present,
       has_fragment: part(8).present,
@@ -253,7 +244,6 @@ impl Http {
       cancelled,
       sink,
       error: None,
-      location: String::new(),
       header_bytes: 0,
       body_status: request.body_status,
       abort_rejected_body: request.abort_rejected_body,
@@ -281,7 +271,7 @@ impl Http {
     if let Some(error) = transfer.error {
       return Err(HttpError::Failure(error));
     }
-    let response = Response { http_status: status, location: transfer.location, curl_code: code };
+    let response = Response { http_status: status, curl_code: code };
     Ok(response)
   }
 }
@@ -292,7 +282,6 @@ struct Transfer<'a> {
   cancelled: &'a AtomicBool,
   sink: &'a mut dyn FnMut(&[u8]) -> Result<(), String>,
   error: Option<String>,
-  location: String,
   header_bytes: usize,
   body_status: Option<u16>,
   abort_rejected_body: bool,
@@ -321,7 +310,7 @@ unsafe extern "C" fn receive_body(context: *mut c_void, data: *const u8, len: us
     }
   }
 }
-unsafe extern "C" fn receive_header(context: *mut c_void, data: *const u8, len: usize) -> usize {
+unsafe extern "C" fn receive_header(context: *mut c_void, _data: *const u8, len: usize) -> usize {
   let transfer = unsafe { &mut *(context.cast::<Transfer<'_>>()) };
   if transfer.cancelled.load(Ordering::Acquire) {
     return 0;
@@ -331,22 +320,6 @@ unsafe extern "C" fn receive_header(context: *mut c_void, data: *const u8, len: 
     return 0;
   }
   transfer.header_bytes += len;
-  let line = if len == 0 { &[] } else { unsafe { core::slice::from_raw_parts(data, len) } };
-  if line.starts_with(b"HTTP/") {
-    transfer.location.clear();
-  }
-  if line.get(..9).is_some_and(|name| name.eq_ignore_ascii_case(b"location:")) {
-    let value = &line[9..];
-    let start =
-      value.iter().position(|byte| *byte != b' ' && *byte != b'\t').unwrap_or(value.len());
-    let end =
-      value.iter().rposition(|byte| !b" \t\r\n".contains(byte)).map_or(start, |end| end + 1);
-    if end.saturating_sub(start) > 8192 {
-      transfer.error = Some("The response redirect is too long.".into());
-      return 0;
-    }
-    transfer.location = String::from_utf8_lossy(&value[start..end.max(start)]).into_owned();
-  }
   len
 }
 
@@ -515,7 +488,7 @@ mod tests {
   }
 
   #[test]
-  fn redirects_are_returned_to_rust_and_interim_locations_are_discarded() {
+  fn redirects_are_not_followed_and_bodies_are_not_exposed() {
     let cancelled = AtomicBool::new(false);
     let mut request = request("redirect");
     request.body_status = Some(200);
@@ -523,7 +496,6 @@ mod tests {
     let response =
       http().perform(&request, &cancelled, &mut |_| panic!("redirect body exposed")).unwrap();
     assert_eq!(response.http_status, 302);
-    assert_eq!(response.location, "/path?ok=1");
     assert_eq!(response.curl_code, 23);
   }
 

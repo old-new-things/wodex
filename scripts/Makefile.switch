@@ -30,7 +30,8 @@ CPPFLAGS := -D__SWITCH__ -DWODEX_VERSION='"$(APP_VERSION)"' \
   -I$(PROJECT_ROOT)/native/include \
   -I$(DEVKITPRO)/libnx/include $(PKG_CFLAGS)
 CXXFLAGS := -std=c++17 -O2 -g -Wall -Wextra -ffunction-sections -fdata-sections \
-  -pthread $(ARCH)
+  "-ffile-prefix-map=$(HOME)=/wodex/home" \
+  "-ffile-prefix-map=$(PROJECT_ROOT)=/wodex/source" -pthread $(ARCH)
 LDFLAGS := -specs=$(DEVKITPRO)/libnx/switch.specs $(ARCH) -pthread \
   -Wl,-Map,$(OUTPUT).map
 LIBPATHS := -L$(DEVKITPRO)/libnx/lib -L$(DEVKITPRO)/portlibs/switch/lib
