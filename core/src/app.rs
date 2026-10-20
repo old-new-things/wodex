@@ -7,6 +7,7 @@ mod markdown;
 mod rich_text;
 mod view;
 
+use crate::backend::home_menu::HomeMenuPhase;
 use crate::state::{Command, SettingsPatch, WodexCore, OFFICIAL_UPDATE_REPOSITORY};
 use crate::update::UpdateChannel;
 use alloc::{
@@ -101,6 +102,21 @@ impl<H: Host> App<H> {
     }
   }
 
+  pub fn show_home_menu(&mut self) {
+    if self.host.home_menu_active() {
+      return;
+    }
+    self.ui.page = Page::HomeMenu;
+    self.ui.confirm_delete = false;
+    self.ui.notice.clear();
+    self.ui.focused = self.home_menu_focus().into();
+    self.buttons.clear();
+    if self.editor.take().is_some() {
+      self.host.text_input(false);
+    }
+    self.check_home_menu();
+  }
+
   pub fn tick(&mut self) {
     while let Some(event) = self.host.poll_transport() {
       match event {
@@ -136,6 +152,14 @@ impl<H: Host> App<H> {
       }
       .into();
     }
+    if self.ui.page == Page::HomeMenu
+      && self.ui.focused == "home-menu-working"
+      && !self.host.home_menu_active()
+    {
+      self.ui.focused = self.home_menu_focus().into();
+      self.ui.notice.clear();
+      self.buttons.clear();
+    }
     self.host.begin_frame();
     while let Some(input) = self.host.poll_input() {
       self.input(input);
@@ -169,17 +193,21 @@ impl<H: Host> App<H> {
     if !self.host.update_active() && !self.update_source_checked() {
       status = UpdateStatus::default();
     }
+    let home_menu = self.host.home_menu_status();
+    let home_menu_blocked = self.busy() || self.host.update_active();
     self.buttons = view::render(
       canvas,
       self.core.state(),
       &mut self.ui,
       &status,
+      &home_menu,
+      home_menu_blocked,
       &self.version,
       self.demo,
       self.host.update_supported(),
       self.editor.as_ref().map(Editor::view),
     );
-    if load_images && self.running && !self.host.update_active() {
+    if load_images && self.running && !self.host.update_active() && !self.host.home_menu_active() {
       // Candidates come only from visible cards. A single loader handles one
       // candidate; the next frame discovers any remaining visible images.
       if let Some(url) = canvas.take_image_requests().into_iter().next() {
@@ -196,7 +224,7 @@ impl<H: Host> App<H> {
   }
 
   fn busy(&self) -> bool {
-    self.streaming() || self.host.network_active()
+    self.streaming() || self.host.network_active() || self.host.home_menu_active()
   }
 
   fn update_source_checked(&self) -> bool {
@@ -304,6 +332,14 @@ impl<H: Host> App<H> {
   fn input(&mut self, input: Input) {
     if input == Input::Quit {
       self.close();
+      return;
+    }
+    if self.host.home_menu_active() {
+      // Installation cannot be cancelled, including by a queued shortcut or
+      // pointer event from the frame that started it.
+      if input == Input::Gamepad(6) {
+        self.close();
+      }
       return;
     }
     if self.editor.is_some() {
@@ -450,6 +486,9 @@ impl<H: Host> App<H> {
   }
 
   fn dispatch(&mut self, action: Action) {
+    if self.host.home_menu_active() {
+      return;
+    }
     let page = self.ui.page;
     match action {
       Action::NewChat if !self.busy() => {
@@ -481,6 +520,14 @@ impl<H: Host> App<H> {
         self.ui.confirm_delete = false;
         self.ui.notice.clear();
         self.ui.focused = self.update_focus().into();
+      }
+      Action::HomeMenu => self.show_home_menu(),
+      Action::HomeMenuCheck => self.check_home_menu(),
+      Action::HomeMenuInstall => self.install_home_menu(),
+      Action::HomeMenuBack => {
+        self.ui.page = Page::Settings;
+        self.ui.notice.clear();
+        self.ui.focused = "home-menu".into();
       }
       Action::Retry => {
         self.ui.page = Page::Chat;
@@ -568,6 +615,58 @@ impl<H: Host> App<H> {
     }
   }
 
+  fn check_home_menu(&mut self) {
+    if self.demo || self.ui.page != Page::HomeMenu || self.host.home_menu_active() {
+      return;
+    }
+    if self.busy() || self.host.update_active() {
+      self.ui.notice =
+        "Finish the current response or update before checking HOME Menu support.".into();
+      return;
+    }
+    let result = self.host.home_menu_check();
+    let started = self.update_result(result);
+    self.ui.focused = self.home_menu_focus().into();
+    if started {
+      self.buttons.clear();
+    }
+  }
+
+  fn home_menu_focus(&self) -> &'static str {
+    if self.demo || self.streaming() || self.host.network_active() || self.host.update_active() {
+      return "home-menu-back";
+    }
+    match self.host.home_menu_status().phase {
+      HomeMenuPhase::Checking | HomeMenuPhase::Installing => "home-menu-working",
+      HomeMenuPhase::Ready => "home-menu-install",
+      HomeMenuPhase::Installed | HomeMenuPhase::Unsupported => "home-menu-back",
+      _ => "home-menu-check",
+    }
+  }
+
+  fn install_home_menu(&mut self) {
+    if self.demo
+      || self.ui.page != Page::HomeMenu
+      || self.host.home_menu_active()
+      || self.host.home_menu_status().phase != HomeMenuPhase::Ready
+    {
+      return;
+    }
+    if self.busy() || self.host.update_active() {
+      self.ui.notice =
+        "Finish the current response or update before installing the HOME Menu tile.".into();
+      return;
+    }
+    if !self.save() {
+      return;
+    }
+    let result = self.host.home_menu_install();
+    if self.update_result(result) {
+      self.ui.focused = "home-menu-working".into();
+      self.buttons.clear();
+    }
+  }
+
   fn install(&mut self) {
     if self.demo
       || !self.host.update_supported()
@@ -635,6 +734,9 @@ impl<H: Host> App<H> {
   }
 
   fn commit_edit(&mut self, target: EditTarget, value: String) {
+    if self.host.home_menu_active() {
+      return;
+    }
     let EditTarget::Setting(setting) = target else {
       self.ui.draft = value;
       self.ui.focused = "send".into();
@@ -701,6 +803,9 @@ impl<H: Host> App<H> {
   }
 
   fn toggle_settings(&mut self) {
+    if self.host.home_menu_active() {
+      return;
+    }
     self.ui.page = if self.ui.page == Page::Settings { Page::Chat } else { Page::Settings };
     self.ui.confirm_delete = false;
     self.ui.focused =
@@ -716,7 +821,11 @@ impl<H: Host> App<H> {
   }
 
   fn back(&mut self) {
-    if self.ui.page == Page::Updates {
+    if self.ui.page == Page::HomeMenu {
+      if !self.host.home_menu_active() {
+        self.dispatch(Action::HomeMenuBack);
+      }
+    } else if self.ui.page == Page::Updates {
       if self.host.update_active() {
         self.host.update_cancel();
       } else {
@@ -730,6 +839,10 @@ impl<H: Host> App<H> {
   }
 
   fn close(&mut self) {
+    if self.host.home_menu_status().phase == HomeMenuPhase::Installing {
+      self.ui.notice = "Installing the HOME Menu tile. Keep Wodex open until it finishes.".into();
+      return;
+    }
     self.host.cancel_images();
     self.host.update_cancel();
     self.host.cancel();

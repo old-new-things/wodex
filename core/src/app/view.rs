@@ -4,6 +4,7 @@ use super::canvas::{
 };
 use super::host::{UpdatePhase, UpdateStatus};
 use super::rich_text::RichTextCache;
+use crate::backend::home_menu::{HomeMenuPhase, HomeMenuStatus, NRO_PATH};
 use crate::state::{Message, MessageStatus, Role, State, OFFICIAL_UPDATE_REPOSITORY};
 use crate::update::UpdateChannel;
 use alloc::{format, string::String, vec::Vec};
@@ -14,6 +15,7 @@ pub enum Page {
   Chat,
   Settings,
   Updates,
+  HomeMenu,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -49,6 +51,10 @@ pub enum Action {
   UpdateInstall,
   UpdateCancel,
   UpdateBack,
+  HomeMenu,
+  HomeMenuCheck,
+  HomeMenuInstall,
+  HomeMenuBack,
 }
 
 #[derive(Clone, Debug)]
@@ -112,30 +118,49 @@ pub fn render(
   state: &State,
   ui: &mut ViewState,
   update: &UpdateStatus,
+  home_menu: &HomeMenuStatus,
+  home_menu_blocked: bool,
   version: &str,
   demo: bool,
   install_supported: bool,
   editor: Option<EditorView<'_>>,
 ) -> Vec<Button> {
-  let mut view = View { canvas, state, ui, buttons: Vec::new(), editor_open: editor.is_some() };
+  let interaction_locked =
+    matches!(home_menu.phase, HomeMenuPhase::Checking | HomeMenuPhase::Installing);
+  let mut view = View {
+    canvas,
+    state,
+    ui,
+    buttons: Vec::new(),
+    editor_open: editor.is_some(),
+    interaction_locked,
+  };
   view.canvas.rect(rect(0, 0, 1280, 720), BACKGROUND, 0);
   view.sidebar(version, demo);
   match view.ui.page {
     Page::Chat => view.chat(demo),
     Page::Settings => view.settings(),
     Page::Updates => view.updates(update, version, demo, install_supported),
+    Page::HomeMenu => view.home_menu(home_menu, demo, home_menu_blocked),
   }
   view.canvas.rect(rect(0, 674, 1280, 46), BACKGROUND, 0);
   view.canvas.rect(rect(24, 674, 1232, 1), BORDER, 0);
-  view.canvas.text(
-    "A  Select     X  Write     B  Back / stop     −  Settings",
-    28,
-    687,
-    16,
-    MUTED,
-    0,
-  );
-  view.canvas.text("L / R  Chats     ZL / ZR  Scroll     +  Exit", 890, 687, 16, MUTED, 0);
+  if home_menu.phase == HomeMenuPhase::Installing {
+    view.canvas.text("Installing the HOME Menu tile… Keep Wodex open.", 28, 687, 16, MUTED, 0);
+  } else if interaction_locked {
+    view.canvas.text("Checking HOME Menu support…", 28, 687, 16, MUTED, 0);
+    view.canvas.text("+  Exit", 1168, 687, 16, MUTED, 0);
+  } else {
+    view.canvas.text(
+      "A  Select     X  Write     B  Back / stop     −  Settings",
+      28,
+      687,
+      16,
+      MUTED,
+      0,
+    );
+    view.canvas.text("L / R  Chats     ZL / ZR  Scroll     +  Exit", 890, 687, 16, MUTED, 0);
+  }
   if let Some(editor) = editor {
     view.editor(editor);
   }
@@ -152,10 +177,14 @@ struct View<'a> {
   ui: &'a mut ViewState,
   buttons: Vec<Button>,
   editor_open: bool,
+  interaction_locked: bool,
 }
 
 impl View<'_> {
   fn add_button(&mut self, id: &str, area: Rect, action: Action) {
+    if self.interaction_locked {
+      return;
+    }
     if self.ui.focused.is_empty() {
       self.ui.focused = id.into();
     }
@@ -166,13 +195,20 @@ impl View<'_> {
   }
 
   fn button(&mut self, id: &str, title: &str, area: Rect, action: Action, primary: bool) {
+    let primary = primary && !self.interaction_locked;
     self.canvas.rect(area, if primary { ACCENT } else { ELEVATED }, 9);
     self.canvas.text(
       title,
       area.x + 16,
       area.y + (area.h - 26) / 2,
       20,
-      if primary { DARK_INK } else { INK },
+      if self.interaction_locked {
+        MUTED
+      } else if primary {
+        DARK_INK
+      } else {
+        INK
+      },
       0,
     );
     self.add_button(id, area, action);
@@ -405,6 +441,7 @@ impl View<'_> {
   fn settings(&mut self) {
     self.canvas.text("MAKE YOURSELF AT HOME", 318, 30, 15, ACCENT, 0);
     self.canvas.text("Settings", 312, 68, 36, INK, 0);
+    self.button("home-menu", "HOME Menu", rect(804, 64, 206, 46), Action::HomeMenu, false);
     self.button("updates", "Updates", rect(1030, 64, 206, 46), Action::Updates, false);
     let state = self.state;
     let settings = &state.settings;
@@ -625,6 +662,112 @@ impl View<'_> {
     );
   }
 
+  fn home_menu(&mut self, status: &HomeMenuStatus, demo: bool, blocked: bool) {
+    self.canvas.text("ONE TILE. STRAIGHT TO YOUR CONVERSATIONS.", 318, 30, 15, ACCENT, 0);
+    self.canvas.text("HOME Menu", 312, 68, 36, INK, 0);
+    self.button(
+      "home-menu-back",
+      "Back to Settings",
+      rect(994, 64, 242, 46),
+      Action::HomeMenuBack,
+      false,
+    );
+    self.canvas.text(
+      "Add a Wodex tile that opens the app on your SD card.",
+      318,
+      140,
+      22,
+      INK,
+      910,
+    );
+    self.canvas.text("KEEP WODEX AT THIS LOCATION", 318, 190, 14, MUTED, 0);
+    self.canvas.rect(rect(314, 218, 922, 52), ELEVATED, 9);
+    self.canvas.text(NRO_PATH, 334, 231, 21, INK, 0);
+    self.canvas.text(
+      "Requires custom firmware that supports unsigned homebrew.",
+      318,
+      288,
+      17,
+      MUTED,
+      910,
+    );
+    self.canvas.rect(rect(314, 330, 922, 184), PANEL, 12);
+    let title = match status.phase {
+      HomeMenuPhase::Unsupported => "HOME Menu installation is unavailable",
+      HomeMenuPhase::Idle => "Check your Switch before installing",
+      HomeMenuPhase::Checking => "Checking HOME Menu support…",
+      HomeMenuPhase::Ready => "Ready to add your Wodex tile",
+      HomeMenuPhase::Installing => "Installing your Wodex tile…",
+      HomeMenuPhase::Installed => "HOME Menu entry detected",
+      HomeMenuPhase::Error => "The HOME Menu operation could not finish",
+    };
+    self.canvas.text(
+      title,
+      338,
+      350,
+      25,
+      if status.phase == HomeMenuPhase::Error { DANGER } else { INK },
+      870,
+    );
+    let description = if demo {
+      "Offline demo: HOME Menu checks and installation are disabled."
+    } else if status.message.is_empty() {
+      "Check the app location, SD card and installation support before adding the tile."
+    } else {
+      &status.message
+    };
+    let description = preview(description, 600);
+    let mut size = 18;
+    while size > 14 && self.canvas.paragraph(&description, 340, 398, size, MUTED, 860, false) > 102
+    {
+      size -= 2;
+    }
+    self.canvas.clip(rect(338, 396, 870, 108));
+    self.canvas.paragraph(&description, 340, 398, size, MUTED, 860, true);
+    self.canvas.unclip();
+    if !demo
+      && !blocked
+      && !matches!(
+        status.phase,
+        HomeMenuPhase::Unsupported | HomeMenuPhase::Checking | HomeMenuPhase::Installing
+      )
+    {
+      self.button(
+        "home-menu-check",
+        "Check again",
+        rect(314, 532, 232, 50),
+        Action::HomeMenuCheck,
+        false,
+      );
+      if status.phase == HomeMenuPhase::Ready {
+        self.button(
+          "home-menu-install",
+          "Install HOME Menu tile",
+          rect(840, 532, 396, 50),
+          Action::HomeMenuInstall,
+          true,
+        );
+      }
+    }
+    let hint = if !self.ui.notice.is_empty() {
+      self.ui.notice.as_str()
+    } else if status.phase == HomeMenuPhase::Installing {
+      "Keep Wodex open and the SD card inserted until installation finishes."
+    } else if status.phase == HomeMenuPhase::Installed {
+      "Exit Wodex, then press HOME. Keep the NRO above in place for future app updates."
+    } else {
+      "The tile launches the NRO above. Keep that file in place when installing app updates."
+    };
+    self.canvas.text(
+      &preview(hint, 240),
+      318,
+      596,
+      16,
+      if self.ui.notice.is_empty() { MUTED } else { DANGER },
+      910,
+    );
+  }
+
   fn editor(&mut self, editor: EditorView<'_>) {
     self.canvas.rect(rect(0, 0, 1280, 720), Color { r: 0, g: 0, b: 0, a: 175 }, 0);
     self.canvas.rect(rect(232, 158, 816, 398), PANEL, 16);
@@ -729,8 +872,18 @@ mod tests {
     let mut state = WodexCore::default().state().clone();
     state.settings.update_repository.clear();
     let mut ui = ViewState { page: Page::Updates, ..ViewState::default() };
-    let buttons =
-      render(&mut canvas, &state, &mut ui, &status(UpdatePhase::Idle), "0.2.0", false, true, None);
+    let buttons = render(
+      &mut canvas,
+      &state,
+      &mut ui,
+      &status(UpdatePhase::Idle),
+      &HomeMenuStatus::default(),
+      false,
+      "0.2.0",
+      false,
+      true,
+      None,
+    );
     assert!(buttons
       .iter()
       .any(|button| button.action == Action::EditSetting(Setting::UpdateRepository)));
@@ -750,6 +903,8 @@ mod tests {
       &state,
       &mut ui,
       &status(UpdatePhase::Ready),
+      &HomeMenuStatus::default(),
+      false,
       "0.2.0",
       false,
       false,
@@ -757,8 +912,18 @@ mod tests {
     );
     assert!(buttons.iter().any(|button| button.action == Action::UpdateCheck));
     assert!(!buttons.iter().any(|button| button.action == Action::UpdateInstall));
-    let buttons =
-      render(&mut canvas, &state, &mut ui, &status(UpdatePhase::Ready), "0.2.0", false, true, None);
+    let buttons = render(
+      &mut canvas,
+      &state,
+      &mut ui,
+      &status(UpdatePhase::Ready),
+      &HomeMenuStatus::default(),
+      false,
+      "0.2.0",
+      false,
+      true,
+      None,
+    );
     assert!(buttons.iter().any(|button| button.action == Action::UpdateInstall));
     drop(canvas);
   }
@@ -774,6 +939,8 @@ mod tests {
       &state,
       &mut ui,
       &status(UpdatePhase::Downloading),
+      &HomeMenuStatus::default(),
+      false,
       "0.2.0",
       false,
       true,
@@ -794,6 +961,8 @@ mod tests {
       &state,
       &mut ui,
       &status(UpdatePhase::Available),
+      &HomeMenuStatus::default(),
+      false,
       "0.2.0",
       true,
       true,
@@ -812,6 +981,130 @@ mod tests {
   }
 
   #[test]
+  fn home_menu_install_control_requires_ready_idle_and_live_mode() {
+    let (backend, mut canvas) = canvas();
+    let state = WodexCore::default().state().clone();
+    let mut ui = ViewState { page: Page::HomeMenu, ..ViewState::default() };
+    for phase in [
+      HomeMenuPhase::Unsupported,
+      HomeMenuPhase::Idle,
+      HomeMenuPhase::Checking,
+      HomeMenuPhase::Ready,
+      HomeMenuPhase::Installing,
+      HomeMenuPhase::Installed,
+      HomeMenuPhase::Error,
+    ] {
+      for (demo, blocked) in [(false, false), (true, false), (false, true)] {
+        let buttons = render(
+          &mut canvas,
+          &state,
+          &mut ui,
+          &status(UpdatePhase::Idle),
+          &HomeMenuStatus { phase, message: "Backend status.".into() },
+          blocked,
+          "0.2.1",
+          demo,
+          true,
+          None,
+        );
+        let can_install = buttons.iter().any(|button| button.action == Action::HomeMenuInstall);
+        assert_eq!(
+          can_install,
+          phase == HomeMenuPhase::Ready && !demo && !blocked,
+          "{phase:?}, demo={demo}, blocked={blocked}"
+        );
+        if matches!(phase, HomeMenuPhase::Checking | HomeMenuPhase::Installing) {
+          assert!(buttons.is_empty(), "all mutations stay locked while the worker is active");
+        } else {
+          assert!(buttons.iter().any(|button| button.action == Action::HomeMenuBack));
+        }
+      }
+    }
+    assert!(backend.drawn_text.iter().any(|text| text == "sdmc:/switch/wodex/wodex.nro"));
+    assert!(backend.drawn_text.iter().any(|text| text.contains("unsigned homebrew")));
+    assert!(backend.drawn_text.iter().any(|text| text.contains("future app updates")));
+  }
+
+  #[test]
+  fn settings_exposes_home_menu_and_unsupported_status_explains_requirements() {
+    let (backend, mut canvas) = canvas();
+    let state = WodexCore::default().state().clone();
+    let mut ui = ViewState { page: Page::Settings, ..ViewState::default() };
+    let home_menu = HomeMenuStatus {
+      phase: HomeMenuPhase::Unsupported,
+      message: "Use the canonical NRO location on your Switch.".into(),
+    };
+    let buttons = render(
+      &mut canvas,
+      &state,
+      &mut ui,
+      &status(UpdatePhase::Idle),
+      &home_menu,
+      false,
+      "0.2.1",
+      false,
+      true,
+      None,
+    );
+    assert!(buttons.iter().any(|button| button.action == Action::HomeMenu));
+    ui.page = Page::HomeMenu;
+    let buttons = render(
+      &mut canvas,
+      &state,
+      &mut ui,
+      &status(UpdatePhase::Idle),
+      &home_menu,
+      false,
+      "0.2.1",
+      false,
+      true,
+      None,
+    );
+    assert!(!buttons
+      .iter()
+      .any(|button| matches!(button.action, Action::HomeMenuCheck | Action::HomeMenuInstall)));
+    assert!(backend.drawn_text.iter().any(|text| text.contains("canonical NRO location")));
+  }
+
+  #[test]
+  fn home_menu_keeps_existing_title_and_cleanup_messages_visible() {
+    let (mut backend, mut canvas) = canvas();
+    let state = WodexCore::default().state().clone();
+    let mut ui = ViewState { page: Page::HomeMenu, ..ViewState::default() };
+    for (phase, message, tail) in [
+      (
+        HomeMenuPhase::Installed,
+        "A HOME Menu title already uses Wodex's identifier. The existing title was left unchanged.",
+        "unchanged.",
+      ),
+      (
+        HomeMenuPhase::Error,
+        "Cannot commit shortcut metadata (0x00001234). Cleanup could not finish. Existing title content was retained where needed; inspect the installation with your title manager before retrying.",
+        "retrying.",
+      ),
+    ] {
+      backend.drawn_text.clear();
+      render(
+        &mut canvas,
+        &state,
+        &mut ui,
+        &status(UpdatePhase::Idle),
+        &HomeMenuStatus { phase, message: message.into() },
+        false,
+        "0.2.1",
+        false,
+        true,
+        None,
+      );
+      assert!(
+        backend.drawn_text.iter().any(|text| text.contains(tail)),
+        "{phase:?}: {:?}",
+        backend.drawn_text
+      );
+    }
+  }
+
+  #[test]
   fn long_chinese_message_remains_scrollable_and_renders_its_tail() {
     let (backend, mut canvas) = canvas();
     let mut state = WodexCore::default().state().clone();
@@ -826,12 +1119,34 @@ mod tests {
       usage: None,
     });
     let mut ui = ViewState::default();
-    render(&mut canvas, &state, &mut ui, &status(UpdatePhase::Idle), "0.2.0", false, false, None);
+    render(
+      &mut canvas,
+      &state,
+      &mut ui,
+      &status(UpdatePhase::Idle),
+      &HomeMenuStatus::default(),
+      false,
+      "0.2.0",
+      false,
+      false,
+      None,
+    );
     assert!(ui.scroll > 2000);
     assert!(backend.drawn_text.iter().any(|text| text.contains("最后一行")));
     ui.follow_bottom = false;
     ui.scroll = 80;
-    render(&mut canvas, &state, &mut ui, &status(UpdatePhase::Idle), "0.2.0", false, false, None);
+    render(
+      &mut canvas,
+      &state,
+      &mut ui,
+      &status(UpdatePhase::Idle),
+      &HomeMenuStatus::default(),
+      false,
+      "0.2.0",
+      false,
+      false,
+      None,
+    );
     assert_eq!(ui.scroll, 80);
     assert!(canvas.take_error().is_none());
     drop(canvas);
@@ -855,6 +1170,8 @@ mod tests {
       &state,
       &mut ui,
       &status(UpdatePhase::Idle),
+      &HomeMenuStatus::default(),
+      false,
       "0.2.0",
       false,
       false,

@@ -1,4 +1,5 @@
 use super::*;
+use crate::backend::home_menu::HomeMenuStatus;
 use crate::backend::images::ImageResult;
 use crate::state::MessageStatus;
 use alloc::{collections::VecDeque, vec};
@@ -28,6 +29,12 @@ struct MockHost {
   image_results: VecDeque<ImageResult>,
   image_active: bool,
   image_cancellations: usize,
+  home_menu: HomeMenuStatus,
+  home_menu_checks: usize,
+  home_menu_installs: usize,
+  fail_home_menu_check: bool,
+  fail_home_menu_install: bool,
+  installation_writes: usize,
 }
 
 impl Host for MockHost {
@@ -121,6 +128,29 @@ impl Host for MockHost {
   fn prepare_install(&mut self) -> Result<bool, String> {
     self.installs += 1;
     Ok(self.update.phase == UpdatePhase::Ready)
+  }
+  fn home_menu_status(&self) -> HomeMenuStatus {
+    self.home_menu.clone()
+  }
+  fn home_menu_active(&self) -> bool {
+    matches!(self.home_menu.phase, HomeMenuPhase::Checking | HomeMenuPhase::Installing)
+  }
+  fn home_menu_check(&mut self) -> Result<(), String> {
+    self.home_menu_checks += 1;
+    if self.fail_home_menu_check {
+      return Err("HOME Menu check failed.".into());
+    }
+    self.home_menu.phase = HomeMenuPhase::Checking;
+    Ok(())
+  }
+  fn home_menu_install(&mut self) -> Result<(), String> {
+    self.home_menu_installs += 1;
+    self.installation_writes = self.writes.len();
+    if self.fail_home_menu_install {
+      return Err("HOME Menu installation failed.".into());
+    }
+    self.home_menu.phase = HomeMenuPhase::Installing;
+    Ok(())
   }
   fn begin_frame(&mut self) {}
   fn poll_input(&mut self) -> Option<Input> {
@@ -460,6 +490,148 @@ fn installation_requires_an_explicit_action_idle_chat_and_successful_save() {
   app.host.update.phase = UpdatePhase::Ready;
   app.close();
   assert_eq!(app.host.installs, 0, "normal exit must not install a staged update");
+}
+
+#[test]
+fn home_menu_checks_on_open_and_requires_explicit_install_after_successful_save() {
+  let mut app = app();
+  app.dispatch(Action::HomeMenu);
+  assert_eq!(app.ui.page, Page::HomeMenu);
+  assert_eq!(app.host.home_menu_checks, 1);
+  assert_eq!(app.host.home_menu_installs, 0);
+  assert_eq!(app.ui.focused, "home-menu-working");
+  app.host.home_menu.phase = HomeMenuPhase::Ready;
+  app.tick();
+  assert_eq!(app.ui.focused, "home-menu-install");
+  assert_eq!(app.host.home_menu_installs, 0, "a successful check never installs automatically");
+  app.host.fail_save = true;
+  app.dispatch(Action::HomeMenuInstall);
+  assert_eq!(app.host.home_menu_installs, 0);
+  assert!(app.ui.notice.contains("Could not save"));
+  app.host.fail_save = false;
+  app.dispatch(Action::HomeMenuInstall);
+  assert_eq!(app.host.home_menu_installs, 1);
+  assert!(app.host.installation_writes > 0, "history must be saved before installation starts");
+  assert_eq!(app.host.installation_writes, app.host.writes.len());
+  assert!(app.running);
+  assert_eq!(app.ui.focused, "home-menu-working");
+  app.host.home_menu.phase = HomeMenuPhase::Installed;
+  app.tick();
+  assert_eq!(app.ui.focused, "home-menu-back");
+  app.dispatch(Action::HomeMenuInstall);
+  assert_eq!(app.host.home_menu_installs, 1, "an installed tile is never overwritten");
+  app.back();
+  assert_eq!(app.ui.page, Page::Settings);
+  assert_eq!(app.ui.focused, "home-menu");
+}
+
+#[test]
+fn home_menu_rejects_demo_busy_unsupported_and_stale_install_actions() {
+  let mut app = app();
+  app.host.network_active = true;
+  app.show_home_menu();
+  assert_eq!(app.host.home_menu_checks, 0);
+  assert!(app.ui.notice.contains("current response"));
+  app.host.network_active = false;
+  app.host.update.phase = UpdatePhase::Downloading;
+  app.show_home_menu();
+  assert_eq!(app.host.home_menu_checks, 0);
+  app.host.home_menu.phase = HomeMenuPhase::Ready;
+  app.dispatch(Action::HomeMenuInstall);
+  assert_eq!(app.host.home_menu_installs, 0);
+  app.host.update.phase = UpdatePhase::Idle;
+  app.host.network_active = true;
+  app.dispatch(Action::HomeMenuInstall);
+  assert_eq!(app.host.home_menu_installs, 0);
+  app.host.network_active = false;
+  app.demo = true;
+  app.show_home_menu();
+  app.dispatch(Action::HomeMenuCheck);
+  app.dispatch(Action::HomeMenuInstall);
+  assert_eq!(app.host.home_menu_checks, 0);
+  assert_eq!(app.host.home_menu_installs, 0);
+  assert!(app.host.writes.is_empty());
+  app.demo = false;
+  app.host.home_menu.phase = HomeMenuPhase::Unsupported;
+  app.dispatch(Action::HomeMenuInstall);
+  assert_eq!(app.host.home_menu_installs, 0);
+  app.host.home_menu.phase = HomeMenuPhase::Ready;
+  app.ui.page = Page::Chat;
+  app.dispatch(Action::HomeMenuInstall);
+  assert_eq!(app.host.home_menu_installs, 0, "an old page cannot confirm installation");
+}
+
+#[test]
+fn home_menu_failures_are_visible_and_retry_does_not_lose_history() {
+  let mut app = app();
+  let history = serde_json::to_string(&app.core.state().conversations).unwrap();
+  app.host.fail_home_menu_check = true;
+  app.show_home_menu();
+  assert_eq!(app.ui.notice, "HOME Menu check failed.");
+  assert_eq!(app.host.home_menu_installs, 0);
+  app.host.fail_home_menu_check = false;
+  app.dispatch(Action::HomeMenuCheck);
+  assert_eq!(app.host.home_menu_checks, 2);
+  app.host.home_menu.phase = HomeMenuPhase::Ready;
+  app.tick();
+  app.host.fail_home_menu_install = true;
+  app.dispatch(Action::HomeMenuInstall);
+  assert_eq!(app.ui.notice, "HOME Menu installation failed.");
+  assert_eq!(serde_json::to_string(&app.core.state().conversations).unwrap(), history);
+  assert!(app.running);
+  app.host.fail_home_menu_install = false;
+  app.dispatch(Action::HomeMenuInstall);
+  assert_eq!(app.host.home_menu_installs, 2);
+}
+
+#[test]
+fn home_menu_installation_blocks_exit_navigation_shortcuts_and_duplicate_actions() {
+  let mut app = app();
+  app.ui.page = Page::HomeMenu;
+  app.host.home_menu.phase = HomeMenuPhase::Ready;
+  app.ui.draft = "keep this draft".into();
+  app.dispatch(Action::HomeMenuInstall);
+  let writes = app.host.writes.len();
+  let id = app.core.state().active_id.clone();
+  app.dispatch(Action::HomeMenuInstall);
+  app.dispatch(Action::NewChat);
+  app.dispatch(Action::Updates);
+  app.dispatch(Action::UpdateCheck);
+  app.commit_edit(EditTarget::Setting(Setting::Model), "changed".into());
+  app.input(Input::Gamepad(2));
+  app.input(Input::Gamepad(4));
+  app.input(Input::Gamepad(6));
+  app.input(Input::Quit);
+  app.input(Input::Key { key: Key::Enter, modifiers: CTRL });
+  app.back();
+  assert_eq!(app.host.home_menu_installs, 1);
+  assert_eq!(app.ui.page, Page::HomeMenu);
+  assert_eq!(app.core.state().active_id, id);
+  assert_eq!(app.ui.draft, "keep this draft");
+  assert_ne!(app.core.state().settings.model, "changed");
+  assert_eq!(app.host.writes.len(), writes);
+  assert!(app.host.requests.is_empty());
+  assert!(app.host.update_checks.is_empty());
+  assert!(app.running);
+  assert!(app.ui.notice.contains("Keep Wodex open"));
+  app.host.home_menu.phase = HomeMenuPhase::Installed;
+  app.input(Input::Quit);
+  assert!(!app.running);
+}
+
+#[test]
+fn home_menu_check_blocks_mutation_but_allows_exiting_without_installation() {
+  let mut app = app();
+  app.show_home_menu();
+  app.dispatch(Action::NewChat);
+  app.input(Input::Gamepad(4));
+  app.back();
+  assert_eq!(app.ui.page, Page::HomeMenu);
+  assert_eq!(app.core.state().active_id, "chat-1");
+  assert_eq!(app.host.home_menu_installs, 0);
+  app.input(Input::Gamepad(6));
+  assert!(!app.running);
+  assert_eq!(app.host.home_menu_installs, 0);
 }
 
 #[test]

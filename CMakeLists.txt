@@ -80,7 +80,8 @@ add_dependencies(wodex_core wodex_core_build)
 
 add_library(wodex_native STATIC
   native/src/platform.cpp native/src/host.cpp native/src/render_backend.cpp
-  native/src/fs_bindings.cpp native/src/http_bindings.cpp native/src/runtime_bindings.cpp)
+  native/src/fs_bindings.cpp native/src/http_bindings.cpp native/src/runtime_bindings.cpp
+  native/src/home_menu_bindings.cpp)
 target_include_directories(wodex_native PUBLIC native/include)
 target_link_libraries(wodex_native PUBLIC wodex_core CURL::libcurl Threads::Threads SDL2::SDL2 ${WODEX_TTF})
 target_compile_options(wodex_native PRIVATE -Wall -Wextra -Wpedantic)
@@ -113,6 +114,9 @@ if(BUILD_TESTING)
     "SDL_VIDEODRIVER=dummy;WODEX_DATA_DIR=${CMAKE_BINARY_DIR}/test-data")
   add_test(NAME ui_updates COMMAND wodex --demo --updates --screenshot "${CMAKE_BINARY_DIR}/updates.bmp")
   set_tests_properties(ui_updates PROPERTIES ENVIRONMENT
+    "SDL_VIDEODRIVER=dummy;WODEX_DATA_DIR=${CMAKE_BINARY_DIR}/test-data")
+  add_test(NAME ui_home_menu COMMAND wodex --demo --home-menu --screenshot "${CMAKE_BINARY_DIR}/home-menu.bmp")
+  set_tests_properties(ui_home_menu PROPERTIES ENVIRONMENT
     "SDL_VIDEODRIVER=dummy;WODEX_DATA_DIR=${CMAKE_BINARY_DIR}/test-data")
   add_test(NAME markdown_render COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_SOURCE_DIR}/tests/preview_markdown.py" "$<TARGET_FILE:wodex>"

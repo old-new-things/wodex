@@ -108,6 +108,10 @@ Assistant replies and thinking text render headings, bold/italic/strikethrough, 
 
 The Rust renderer uses the bundled CJK font and stays `no_std`. Markdown images with direct HTTPS PNG or JPEG URLs load in the background when visible, preserve their aspect ratio, and show alternative text. Downloads do not include your API key or conversation history. Ordinary links remain text; user messages, the composer, saved history, and API requests preserve their original source. [Markdown support and limits](docs/markdown.md) describes supported images and reproducible visual fixtures. These features are available in current nightlies.
 
+## HOME Menu
+
+In current nightlies, open **Settings → HOME Menu** to install a Wodex tile. It launches `sdmc:/switch/wodex/wodex.nro`, so later app updates do not require reinstalling the tile. Your custom firmware must support unsigned homebrew titles. The installer prepares its bundled forwarder on the console; no key file or separate NSP download is needed. [HOME Menu instructions](docs/home-menu.md) cover installation, removal, and the build process.
+
 ## Self-updates
 
 Open **Settings → Updates**, choose **Versions** or opt into **Nightly**, then choose **Check for updates**, **Download**, and **Install and exit**. New installations use the official `old-new-things/wodex` Pages source and Versions channel. Existing empty sources stay disabled; **Use Wodex** selects the official source. Checks are manual. Desktop builds can check both feeds; self-installation is supported on Switch.
@@ -116,7 +120,7 @@ Nightlies are ordered by their UTC build timestamps, independently of version nu
 
 If you installed the early nightly labeled 0.3.0, [install a current nightly manually once](docs/updates.md#install-an-update) to receive the new comparison rules. Existing 0.2.0 installations can update to 0.2.1 through Versions, then select Nightly.
 
-Wodex downloads the selected build's `wodex.nro` to a sibling temporary file and verifies the feed's advertised size, SHA-256, executable headers and embedded assets. Installing saves conversations, closes the interface and embedded resources, preserves a launchable `.previous.nro`, and replaces the actual NRO path supplied by the loader. Reopen Wodex from hbmenu afterward. A normal exit never installs a downloaded update.
+Wodex downloads the selected build's `wodex.nro` to a sibling temporary file and verifies the feed's advertised size, SHA-256, executable headers and embedded assets. Installing saves conversations, closes the interface and embedded resources, preserves a launchable `.previous.nro`, and replaces the actual NRO path supplied by the loader. Reopen Wodex from hbmenu or its installed HOME Menu tile afterward. A normal exit never installs a downloaded update.
 
 The SD-card replacement uses two renames, so power interruption can require restoring the `.previous.nro` backup manually. [Update and recovery instructions](docs/updates.md) explain that boundary, both build channels, and publication recovery.
 

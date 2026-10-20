@@ -40,20 +40,26 @@ LIBPATHS := -L$(DEVKITPRO)/libnx/lib -L$(DEVKITPRO)/portlibs/switch/lib
 LIBS := -Wl,--start-group $(RUST_LIB) $(PKG_LIBS) -lpthread -lnx -lc -lm -lstdc++ -Wl,--end-group
 LD := $(CXX)
 # Only platform adapters remain native; application/views/layout are Rust.
-SOURCES := $(addprefix $(PROJECT_ROOT)/native/src/,main.cpp host.cpp render_backend.cpp platform.cpp fs_bindings.cpp http_bindings.cpp runtime_bindings.cpp)
+SOURCES := $(addprefix $(PROJECT_ROOT)/native/src/,main.cpp host.cpp render_backend.cpp platform.cpp fs_bindings.cpp http_bindings.cpp runtime_bindings.cpp home_menu_bindings.cpp)
 OFILES := $(patsubst $(PROJECT_ROOT)/native/src/%.cpp,$(BUILD_DIR)/%.o,$(SOURCES))
 REQUIRED_ROMFS_FILES := $(PROJECT_ROOT)/romfs/cacert.pem \
   $(PROJECT_ROOT)/romfs/fonts/NotoSansCJKsc-Regular.otf \
   $(PROJECT_ROOT)/romfs/fonts/OFL.txt \
   $(PROJECT_ROOT)/romfs/fonts/SourceCodePro-Regular.otf \
-  $(PROJECT_ROOT)/romfs/fonts/SourceCodePro-OFL.txt
+  $(PROJECT_ROOT)/romfs/fonts/SourceCodePro-OFL.txt \
+  $(PROJECT_ROOT)/romfs/home-menu/template.bin \
+  $(PROJECT_ROOT)/romfs/home-menu/manifest.json \
+  $(PROJECT_ROOT)/romfs/home-menu/LICENSE.nx-hbloader.txt
 # Files track content edits; directories also track nested additions/removals.
 ROMFS_INPUTS := $(shell find "$(PROJECT_ROOT)/romfs" -print)
 $(foreach resource,$(REQUIRED_ROMFS_FILES),$(if $(wildcard $(resource)),,$(error Missing required RomFS resource: $(resource))))
 NROFLAGS := --nacp=$(OUTPUT).nacp --icon=$(APP_ICON) --romfsdir=$(PROJECT_ROOT)/romfs
 
-.PHONY: all
+.PHONY: all verify-home-menu
 all: $(OUTPUT).nro
+
+verify-home-menu:
+	python3 "$(PROJECT_ROOT)/scripts/build-home-menu.py" --check
 
 $(BUILD_DIR):
 	mkdir -p "$@"
@@ -65,6 +71,6 @@ $(OUTPUT).elf: $(OFILES) $(RUST_LIB) $(PROJECT_ROOT)/scripts/Makefile.switch $(V
 	$(LD) $(LDFLAGS) $(OFILES) $(LIBPATHS) $(LIBS) -o "$@"
 	$(NM) -CSn "$@" > "$(OUTPUT).lst"
 $(OUTPUT).nacp: $(VERSION_FILE) | $(BUILD_DIR)
-$(OUTPUT).nro: $(OUTPUT).elf $(OUTPUT).nacp $(APP_ICON) $(REQUIRED_ROMFS_FILES) $(ROMFS_INPUTS)
+$(OUTPUT).nro: $(OUTPUT).elf $(OUTPUT).nacp $(APP_ICON) $(REQUIRED_ROMFS_FILES) $(ROMFS_INPUTS) | verify-home-menu
 
 -include $(OFILES:.o=.d)

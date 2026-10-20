@@ -3,6 +3,7 @@
 #include "wodex_app.h"
 #include "wodex_core.h"
 #include "wodex_host.h"
+#include "wodex_home_menu.h"
 #include "wodex_render.h"
 #include <SDL.h>
 #include <SDL_ttf.h>
@@ -65,6 +66,7 @@ void screenshot(SDL_Renderer *renderer, const std::string &path) {
 int main(int argc, char **argv) {
   bool demo = false;
   bool show_updates = false;
+  bool show_home_menu = false;
   std::string screenshot_path;
   for (int index = 1; index < argc; ++index) {
     const std::string argument = argv[index];
@@ -72,12 +74,15 @@ int main(int argc, char **argv) {
       demo = true;
     else if (argument == "--updates")
       show_updates = true;
+    else if (argument == "--home-menu")
+      show_home_menu = true;
     else if (argument == "--screenshot" && index + 1 < argc)
       screenshot_path = argv[++index];
     else if (argument == "--help") {
       std::cout << "Wodex · a native DeepSeek client for Nintendo Switch\n"
                    "  --demo                  Sample chat, no network or saves\n"
                    "  --updates               Open update settings\n"
+                   "  --home-menu             Open HOME Menu installation settings\n"
                    "  --screenshot FILE.bmp   Render once and save a 1280×720 image\n"
                    "Environment: DEEPSEEK_API_KEY, WODEX_DATA_DIR, WODEX_FONT, WODEX_CA_BUNDLE\n";
       return 0;
@@ -89,7 +94,9 @@ int main(int argc, char **argv) {
   try {
     std::unique_ptr<WodexPendingUpdate, decltype(&wodex_pending_free)> pending_update(nullptr, wodex_pending_free);
     const auto fs_api = wodex_native_fs_api();
-    const WodexBackendApi backend_api{fs_api, *wodex_runtime_api(), *wodex_http_api()};
+    const WodexBackendApi backend_api{
+      fs_api, *wodex_runtime_api(), *wodex_http_api(), wodex_home_menu_api()};
+    wodex_home_menu_configure_exit();
     const char *update_target = "";
 #ifdef __SWITCH__
     if (argc > 0 && argv && argv[0]) update_target = argv[0];
@@ -135,6 +142,8 @@ int main(int argc, char **argv) {
               wodex_app_new(&host_api, &render_api, &backend_api, WODEX_VERSION, update_target, demo, show_updates, &error),
               wodex_app_free);
           check_app(app != nullptr, error);
+          if (show_home_menu)
+            wodex_app_show_home_menu(app.get());
           if (!screenshot_path.empty())
             wodex_app_set_image_loading(app.get(), false);
           do {

@@ -1,0 +1,43 @@
+{
+  "format": "WDXHOME1",
+  "title_id": "05776f6465780000",
+  "target_nro": "sdmc:/switch/wodex/wodex.nro",
+  "title": "Wodex",
+  "author": "Wodex contributors",
+  "forwarder_version": "Forwarder 1",
+  "application_version": 0,
+  "size": 177172,
+  "sha256": "683bfe7ececc3ee317cd64b3c951c43df85353f050dcb9884fee2d719a635c92",
+  "toolchain": "docker.io/devkitpro/devkita64:20260219",
+  "nx_hbloader_revision": "82b95122c5ae8dc059bf23893ba7623c72c86773",
+  "hacbrewpack_revision": "745b16ecfc9ce055743067d200572204cb2aac6c",
+  "generator_sha256": "f369ff36bfbaa41b74c1b41f98dc87879723157220c02529466283e57c8dd64c",
+  "header_helper_sha256": "66fc7d412437712ba6cbdd45e5fdce5d3f4805edd4ce9685601a38786e11c668",
+  "source_sha256": {
+    "external/nx-hbloader/source/main.c": "7f5328181d63f38ebb1bc4786cb9fbb48fa32fdea160abbb6a26013761f2976a",
+    "external/nx-hbloader/source/trampoline.s": "2f11a79cc9a4a162dcef557274076b66480bb256f353d47cea1ef56ab8e11f4e",
+    "external/nx-hbloader/hbl.json": "1efef8edb477e36ac9d1f60f53d7efcb03e0220276aaeb61cb67fa4c59ef4eba",
+    "external/nx-hbloader/LICENSE.md": "db88a9c4d4d3148cbe397ca0acb7886e7aebcc8b984d4ce3b949e9caabdc7223",
+    "assets/icon.jpg": "a206f1ab97e708ec8c31b604f1a75e08c6f5287bd1e4f46f87c01233988bb4cb"
+  },
+  "contents": [
+    {
+      "name": "program",
+      "nca_content_type": 0,
+      "size": 55296,
+      "sha256": "1cdce04f88b4be66b8bf2ed6744d94dda9f55979e4a9729c104d72a0212eddbb"
+    },
+    {
+      "name": "control",
+      "nca_content_type": 2,
+      "size": 117760,
+      "sha256": "4f1c3b781f691fe2a61947f45156063709d933df1706647e6c8301351d21f1a4"
+    },
+    {
+      "name": "meta",
+      "nca_content_type": 1,
+      "size": 4096,
+      "sha256": "43112170e0fe114240ba6b311a2bcbef004bc8e60c98027d16b8bef01fcb54c6"
+    }
+  ]
+}

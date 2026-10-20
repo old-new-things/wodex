@@ -4,6 +4,8 @@ This directory accompanies Wodex Switch binaries as `licenses.tar.gz`. Preserve 
 
 The native inventory below was checked against the linked archives in the Switch link map and the installed packages in `devkitpro/devkita64:20260219`. These are library/runtime notices; the build tools themselves are not distributed in the NRO. Upstream copyright holders and their contact details are preserved as required attribution.
 
+The HOME Menu forwarder also embeds native code from [nx-hbloader commit `82b95122`](https://github.com/switchbrew/nx-hbloader/tree/82b95122c5ae8dc059bf23893ba7623c72c86773), under the ISC license in `native/nx-hbloader-82b9512/LICENSE.md`. It uses libnx from the SDK listed below. The pinned source, Wodex's build-time changes, and reproducible template instructions are in `external/nx-hbloader/README.wodex.md` and `romfs/home-menu/README.md` in the source repository.
+
 | Component | SDK package version | Notice source |
 | --- | --- | --- |
 | SDL2 | 2.28.5-4 | [Upstream release license](https://github.com/libsdl-org/SDL/blob/release-2.28.5/LICENSE.txt), copied to `native/SDL2-2.28.5/LICENSE.txt` |

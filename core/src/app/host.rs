@@ -1,6 +1,7 @@
 //! Platform services behind a borrowed C callback table. Application and input
 //! decisions remain in Rust; callbacks only translate native events and perform I/O.
 use crate::backend::{
+  home_menu::{HomeMenu, HomeMenuStatus},
   http::Http,
   images::{ImageLoader, ImageResult},
   runtime::Runtime,
@@ -136,6 +137,10 @@ pub trait Host {
   fn update_download(&mut self) -> Result<(), String>;
   fn update_cancel(&mut self);
   fn prepare_install(&mut self) -> Result<bool, String>;
+  fn home_menu_status(&self) -> HomeMenuStatus;
+  fn home_menu_active(&self) -> bool;
+  fn home_menu_check(&mut self) -> Result<(), String>;
+  fn home_menu_install(&mut self) -> Result<(), String>;
   fn begin_frame(&mut self);
   fn poll_input(&mut self) -> Option<Input>;
   fn text_input(&mut self, enabled: bool);
@@ -207,6 +212,7 @@ pub struct NativeHost {
   transport: Transport,
   images: ImageLoader,
   updater: Updater,
+  home_menu: HomeMenu,
   transport_events: VecDeque<TransportEvent>,
   install_supported: bool,
   pending: Option<PendingUpdate>,
@@ -252,6 +258,7 @@ impl NativeHost {
       if fs.is_switch() { "romfs:/cacert.pem".into() } else { fs.environment("WODEX_CA_BUNDLE") };
     let transport = Transport::new(runtime, http, ca_bundle.clone())?;
     let images = ImageLoader::new(runtime, http, ca_bundle.clone())?;
+    let home_menu = HomeMenu::new(runtime, fs, backend.home_menu, target.clone())?;
     let updater =
       Updater::new(runtime, http, fs, version.into(), target, String::new(), ca_bundle)?;
     Ok(Self {
@@ -261,6 +268,7 @@ impl NativeHost {
       transport,
       images,
       updater,
+      home_menu,
       transport_events: VecDeque::new(),
       install_supported,
       pending: None,
@@ -312,6 +320,9 @@ impl Host for NativeHost {
     self.fs.environment("DEEPSEEK_API_KEY")
   }
   fn start(&mut self, url: &str, key: &str, body: &str) -> Result<(), String> {
+    if self.home_menu.active() {
+      return Err("Wait for the HOME Menu operation to finish.".into());
+    }
     self.transport.start(url, key, body)
   }
   fn cancel(&mut self) {
@@ -327,7 +338,7 @@ impl Host for NativeHost {
     self.transport_events.pop_front()
   }
   fn request_image(&mut self, url: &str) -> bool {
-    self.images.request(url)
+    !self.home_menu.active() && self.images.request(url)
   }
   fn poll_image(&mut self) -> Option<ImageResult> {
     self.images.poll()
@@ -345,20 +356,46 @@ impl Host for NativeHost {
     self.updater.active()
   }
   fn update_check(&mut self, repository: &str, channel: UpdateChannel) -> Result<(), String> {
+    if self.home_menu.active() {
+      return Err("Wait for the HOME Menu operation to finish.".into());
+    }
     self.updater.check(repository, channel)
   }
   fn update_download(&mut self) -> Result<(), String> {
+    if self.home_menu.active() {
+      return Err("Wait for the HOME Menu operation to finish.".into());
+    }
     self.updater.download()
   }
   fn update_cancel(&mut self) {
     self.updater.cancel();
   }
   fn prepare_install(&mut self) -> Result<bool, String> {
-    if self.transport.active() {
-      return Err("Wait for the response to finish before installing.".into());
+    if self.transport.active() || self.home_menu.active() {
+      return Err("Wait for the current operation to finish before installing.".into());
     }
     self.pending = self.updater.pending_install();
     Ok(self.install_supported && self.pending.is_some())
+  }
+  fn home_menu_status(&self) -> HomeMenuStatus {
+    self.home_menu.status()
+  }
+  fn home_menu_active(&self) -> bool {
+    self.home_menu.active()
+  }
+  fn home_menu_check(&mut self) -> Result<(), String> {
+    if self.transport.active() || self.updater.active() || self.pending.is_some() {
+      return Err("Wait for the current operation before checking HOME Menu support.".into());
+    }
+    self.images.cancel();
+    self.home_menu.check()
+  }
+  fn home_menu_install(&mut self) -> Result<(), String> {
+    if self.transport.active() || self.updater.active() || self.pending.is_some() {
+      return Err("Wait for the current operation before installing the HOME Menu tile.".into());
+    }
+    self.images.cancel();
+    self.home_menu.install()
   }
   fn begin_frame(&mut self) {
     unsafe { (self.api.begin_frame)(self.api.context) }

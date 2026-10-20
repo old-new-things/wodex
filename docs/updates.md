@@ -9,7 +9,7 @@ New installations use `old-new-things/wodex` and the **Versions** channel. Exist
 1. Open Settings → Updates, select **Versions** or **Nightly**, and choose **Check for updates**.
 2. Review the selected build, then choose **Download**.
 3. Wait for verification to complete. Choose **Install and exit** to replace the running NRO.
-4. Launch Wodex again from hbmenu. Installation exits the app; it does not restart it automatically.
+4. Launch Wodex again from hbmenu or its installed HOME Menu tile. Installation exits the app; it does not restart it automatically. The tile forwards to the NRO and does not need reinstalling after an update.
 
 Wodex 0.2.1 adds the optional Nightly channel. Current nightlies contain the timestamp-based selection and return-to-Versions behavior described below. The fixed 0.2.1 download retains its original comparison rules; select Nightly to receive the new behavior. Wodex 0.2.0 can update to 0.2.1 through Versions first.
 

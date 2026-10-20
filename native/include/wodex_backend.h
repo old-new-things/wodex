@@ -3,6 +3,7 @@
 #include "wodex_fs.h"
 #include "wodex_http.h"
 #include "wodex_runtime.h"
+#include "wodex_home_menu.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -12,6 +13,7 @@ typedef struct WodexBackendApi {
   WodexFsApi fs;
   WodexRuntimeApi runtime;
   WodexHttpApi http;
+  const WodexHomeMenuApi *home_menu;
 } WodexBackendApi;
 
 typedef struct WodexBuffer WodexBuffer;

@@ -126,7 +126,7 @@ private:
     frame();
   }
   wodex::NativeBindings bindings_;
-  WodexBackendApi backend_{wodex_native_fs_api(), *wodex_runtime_api(), *wodex_http_api()};
+  WodexBackendApi backend_{wodex_native_fs_api(), *wodex_runtime_api(), *wodex_http_api(), nullptr};
   WodexHostApi host_;
   WodexRenderApi render_;
   std::unique_ptr<WodexApp, decltype(&wodex_app_free)> app_;

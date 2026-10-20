@@ -13,7 +13,7 @@ namespace wodex {
 namespace {
 using Json = nlohmann::json;
 WodexBackendApi api() {
-  return {wodex_native_fs_api(), *wodex_runtime_api(), *wodex_http_api()};
+  return {wodex_native_fs_api(), *wodex_runtime_api(), *wodex_http_api(), nullptr};
 }
 std::string ca_bundle() {
   const char *value = std::getenv("WODEX_CA_BUNDLE");

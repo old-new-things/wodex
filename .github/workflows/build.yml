@@ -70,6 +70,8 @@ jobs:
           cargo clippy --workspace --all-targets --locked -- -D warnings
           cargo test --workspace --locked
           python3 -m unittest discover -s tests -p 'test_*pages*.py'
+          python3 scripts/build-home-menu.py --check
+          python3 -m unittest discover -s tests -p 'test_home_menu*.py'
       - name: Check embedded update identity
         run: |
           for build_channel in nightly version; do

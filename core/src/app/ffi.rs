@@ -100,6 +100,13 @@ pub unsafe extern "C" fn wodex_app_set_image_loading(app: *mut WodexApp, enabled
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn wodex_app_show_home_menu(app: *mut WodexApp) {
+  if let Some(app) = app.as_mut() {
+    app.app.show_home_menu();
+  }
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn wodex_app_free(app: *mut WodexApp) {
   if !app.is_null() {
     drop(Box::from_raw(app));
