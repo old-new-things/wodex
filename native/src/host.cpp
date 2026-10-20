@@ -1,6 +1,5 @@
 #include "wodex_host.h"
 #include "platform.hpp"
-#include "transport.hpp"
 #include <SDL.h>
 #include <algorithm>
 #include <cstdlib>
@@ -55,19 +54,11 @@ uint32_t normalized_modifiers(Uint16 modifiers) noexcept {
 }
 } // namespace
 
-struct NativeBackend::Impl {
+struct NativeBindings::Impl {
   Platform &platform;
-  std::string save_path;
-  std::string target;
-  Transport transport;
-  Updater updater;
-  std::optional<PendingUpdate> pending;
   std::string output;
   std::string error;
   const char *fallback_error = nullptr;
-  std::deque<TransportEvent> transport_queue;
-  TransportEvent transport_event;
-  UpdateStatus status;
   std::deque<WodexHostInput> input_queue;
   bool input_failed = false;
   std::vector<SDL_GameController *> controllers;
@@ -75,9 +66,7 @@ struct NativeBackend::Impl {
   PadState pad{};
 #endif
 
-  Impl(Platform &platform_value, std::string version, std::string update_target)
-      : platform(platform_value), save_path(platform.data_dir() + "/state.json"),
-        target(std::move(update_target)), updater(std::move(version), target) {
+  explicit Impl(Platform &platform_value) : platform(platform_value) {
 #ifndef __SWITCH__
     try {
       for (int index = 0; index < SDL_NumJoysticks(); ++index)
@@ -94,8 +83,6 @@ struct NativeBackend::Impl {
   }
 
   ~Impl() {
-    transport.cancel();
-    updater.cancel();
     SDL_StopTextInput();
     for (auto *controller : controllers)
       SDL_GameControllerClose(controller);
@@ -274,109 +261,6 @@ struct NativeBackend::Impl {
       guarded(context, [&](Impl &self) { value = self.platform.running(); });
       return value;
     };
-    result.is_switch = [](void *context) noexcept {
-      bool value = false;
-      guarded(context, [&](Impl &) {
-#ifdef __SWITCH__
-        value = true;
-#endif
-      });
-      return value;
-    };
-    result.load = [](void *context, WodexHostBytes *output_value) noexcept {
-      return guarded(context, [&](Impl &self) {
-        self.output = load_file(self.save_path);
-        *output_value = borrowed(self.output);
-      });
-    };
-    result.save = [](void *context, WodexHostBytes content) noexcept {
-      return guarded(context, [&](Impl &self) { atomic_write(self.save_path, copied(content)); });
-    };
-    result.preserve = [](void *context, WodexHostBytes content) noexcept {
-      return guarded(context, [&](Impl &self) { preserve_file(self.save_path, copied(content)); });
-    };
-    result.environment_key = [](void *context) noexcept {
-      WodexHostBytes value{};
-      guarded(context, [&](Impl &self) {
-        const char *key = std::getenv("DEEPSEEK_API_KEY");
-        self.output = key ? key : "";
-        value = borrowed(self.output);
-      });
-      return value;
-    };
-    result.start = [](void *context, WodexHostBytes url, WodexHostBytes key, WodexHostBytes body) noexcept {
-      return guarded(context, [&](Impl &self) { self.transport.start(copied(url), copied(key), copied(body)); });
-    };
-    result.cancel = [](void *context) noexcept {
-      guarded(context, [](Impl &self) { self.transport.cancel(); });
-    };
-    result.network_active = [](void *context) noexcept {
-      bool value = false;
-      guarded(context, [&](Impl &self) { value = self.transport.active(); });
-      return value;
-    };
-    result.poll_transport = [](void *context) noexcept {
-      WodexHostTransportEvent value{};
-      if (!guarded(context, [&](Impl &self) {
-        if (self.transport_queue.empty()) {
-          for (auto &event : self.transport.poll())
-            self.transport_queue.push_back(std::move(event));
-        }
-        if (self.transport_queue.empty())
-          return;
-        self.transport_event = std::move(self.transport_queue.front());
-        self.transport_queue.pop_front();
-        const auto &event = self.transport_event;
-        value.kind = event.kind == TransportEvent::Data ? 1 : 2;
-        value.data = borrowed(event.data);
-        value.http_status = static_cast<uint16_t>(std::clamp(event.http_status, 0L, 65535L));
-        value.error = borrowed(event.error);
-      })) {
-        value.kind = 2;
-        value.error = last_error(context);
-      }
-      return value;
-    };
-    result.update_status = [](void *context) noexcept {
-      WodexHostUpdateStatus value{};
-      if (!guarded(context, [&](Impl &self) {
-        self.status = self.updater.status();
-        value = {static_cast<uint32_t>(self.status.phase), borrowed(self.status.message),
-                 borrowed(self.status.version), borrowed(self.status.notes), self.status.downloaded,
-                 self.status.total};
-      })) {
-        value.phase = static_cast<uint32_t>(UpdatePhase::Error);
-        value.message = last_error(context);
-      }
-      return value;
-    };
-    result.update_supported = [](void *context) noexcept {
-      bool value = false;
-      guarded(context, [&](Impl &self) { value = !self.target.empty(); });
-      return value;
-    };
-    result.update_active = [](void *context) noexcept {
-      bool value = false;
-      guarded(context, [&](Impl &self) { value = self.updater.active(); });
-      return value;
-    };
-    result.update_check = [](void *context, WodexHostBytes repository) noexcept {
-      return guarded(context, [&](Impl &self) { self.updater.check(copied(repository)); });
-    };
-    result.update_download = [](void *context) noexcept {
-      return guarded(context, [](Impl &self) { self.updater.download(); });
-    };
-    result.update_cancel = [](void *context) noexcept {
-      guarded(context, [](Impl &self) { self.updater.cancel(); });
-    };
-    result.prepare_install = [](void *context, bool *ready) noexcept {
-      return guarded(context, [&](Impl &self) {
-        if (self.transport.active())
-          throw std::runtime_error("Wait for the response to finish before installing.");
-        self.pending = self.updater.pending_install();
-        *ready = self.pending.has_value() && !self.target.empty();
-      });
-    };
     result.begin_frame = [](void *context) noexcept {
       // A native input allocation failure exits through the normal Rust close path.
       if (!guarded(context, [](Impl &self) { self.begin_frame(); }))
@@ -420,9 +304,7 @@ struct NativeBackend::Impl {
   }
 };
 
-NativeBackend::NativeBackend(Platform &platform, std::string version, std::string update_target)
-    : impl_(std::make_unique<Impl>(platform, std::move(version), std::move(update_target))) {}
-NativeBackend::~NativeBackend() = default;
-WodexHostApi NativeBackend::api() { return impl_->api(); }
-std::optional<PendingUpdate> NativeBackend::pending_install() const { return impl_->pending; }
+NativeBindings::NativeBindings(Platform &platform) : impl_(std::make_unique<Impl>(platform)) {}
+NativeBindings::~NativeBindings() = default;
+WodexHostApi NativeBindings::api() { return impl_->api(); }
 } // namespace wodex

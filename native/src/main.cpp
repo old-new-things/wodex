@@ -1,15 +1,13 @@
 #include "platform.hpp"
-#include "updater.hpp"
+#include "wodex_backend.h"
 #include "wodex_app.h"
 #include "wodex_core.h"
 #include "wodex_host.h"
 #include "wodex_render.h"
 #include <SDL.h>
 #include <SDL_ttf.h>
-#include <algorithm>
 #include <iostream>
 #include <memory>
-#include <optional>
 #include <stdexcept>
 #include <string>
 #ifdef __SWITCH__
@@ -62,29 +60,6 @@ void screenshot(SDL_Renderer *renderer, const std::string &path) {
     throw std::runtime_error("Cannot save screenshot.");
 }
 
-std::string update_install_path(int argc, char **argv) {
-#ifdef __SWITCH__
-  if (argc < 1 || !argv || !argv[0])
-    return {};
-  const std::string path = argv[0];
-  if (path.size() < 11 || path.size() > 768 || path.compare(0, 6, "sdmc:/") != 0 ||
-      path.compare(path.size() - 4, 4, ".nro") != 0 || path.find('\\') != std::string::npos ||
-      path.find("//") != std::string::npos || path.find("/../") != std::string::npos ||
-      path.find("/./") != std::string::npos ||
-      std::any_of(path.begin(), path.end(),
-                  [](unsigned char value) { return value < 0x20 || value == 0x7f; }))
-    return {};
-  const std::string backup_suffix = ".previous.nro";
-  if (path.size() >= backup_suffix.size() &&
-      path.compare(path.size() - backup_suffix.size(), backup_suffix.size(), backup_suffix) == 0)
-    return {};
-  return path;
-#else
-  static_cast<void>(argc);
-  static_cast<void>(argv);
-  return {};
-#endif
-}
 } // namespace
 
 int main(int argc, char **argv) {
@@ -112,7 +87,13 @@ int main(int argc, char **argv) {
     }
   }
   try {
-    std::optional<PendingUpdate> pending_update;
+    std::unique_ptr<WodexPendingUpdate, decltype(&wodex_pending_free)> pending_update(nullptr, wodex_pending_free);
+    const auto fs_api = wodex_native_fs_api();
+    const WodexBackendApi backend_api{fs_api, *wodex_runtime_api(), *wodex_http_api()};
+    const char *update_target = "";
+#ifdef __SWITCH__
+    if (argc > 0 && argv && argv[0]) update_target = argv[0];
+#endif
     {
       std::string resource_dir;
 #ifndef __SWITCH__
@@ -145,13 +126,13 @@ int main(int argc, char **argv) {
           SDL_SetRenderDrawBlendMode(renderer.get(), SDL_BLENDMODE_BLEND) != 0)
         throw std::runtime_error(SDL_GetError());
       {
-        NativeBackend backend(platform, WODEX_VERSION, update_install_path(argc, argv));
-        auto host_api = backend.api();
+        NativeBindings bindings(platform);
+        auto host_api = bindings.api();
         auto render_api = wodex_render_api(renderer.get(), &platform);
         {
           char *error = nullptr;
           std::unique_ptr<WodexApp, decltype(&wodex_app_free)> app(
-              wodex_app_new(&host_api, &render_api, WODEX_VERSION, demo, show_updates, &error),
+              wodex_app_new(&host_api, &render_api, &backend_api, WODEX_VERSION, update_target, demo, show_updates, &error),
               wodex_app_free);
           check_app(app != nullptr, error);
           do {
@@ -168,14 +149,17 @@ int main(int argc, char **argv) {
             SDL_RenderPresent(renderer.get());
             SDL_Delay(8);
           } while (wodex_app_running(app.get()));
+          pending_update.reset(wodex_app_take_pending(app.get()));
         }
-        pending_update = backend.pending_install();
       }
     }
     // Every Rust handle, worker and native service has been destroyed here.
     // Platform has unmounted RomFS, so replacement cannot rename an open asset.
-    if (pending_update)
-      install_update(*pending_update);
+    if (pending_update) {
+      char *error = nullptr;
+      const bool installed = wodex_pending_install(&fs_api, pending_update.get(), &error);
+      check_app(installed, error);
+    }
     return 0;
   } catch (const std::exception &error) {
     std::cerr << "Wodex: " << error.what() << '\n';

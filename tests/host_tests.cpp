@@ -16,9 +16,6 @@ void check(bool condition, const char *description) {
     throw std::runtime_error(description);
   ++passed;
 }
-WodexHostBytes bytes(const std::string &value) {
-  return {reinterpret_cast<const uint8_t *>(value.data()), value.size()};
-}
 std::string copied(WodexHostBytes value) {
   return value.len ? std::string(reinterpret_cast<const char *>(value.data), value.len) : "";
 }
@@ -46,25 +43,6 @@ struct TemporaryStorage {
     std::filesystem::remove_all(root, error);
   }
 };
-
-void test_storage(WodexHostApi &api, const std::string &path) {
-  WodexHostBytes loaded{};
-  check(api.load(api.context, &loaded) && loaded.len == 0, "Missing storage was not empty.");
-  const std::string binary("abc\0\xffxyz", 8);
-  check(api.save(api.context, bytes(binary)), "Host save failed.");
-  check(api.load(api.context, &loaded), "Host load failed.");
-  check(copied(loaded) == binary, "Native host altered non-UTF-8 or NUL storage bytes.");
-  check(api.preserve(api.context, bytes(binary)), "Host recovery failed.");
-  check(wodex::load_file(path + ".recovery-1") == binary, "Recovery altered corrupt data bytes.");
-  const std::string later = "second recovery";
-  check(api.preserve(api.context, bytes(later)), "Repeated host recovery failed.");
-  check(wodex::load_file(path + ".recovery-1") == binary &&
-        wodex::load_file(path + ".recovery-2") == later,
-        "Host recovery replaced an earlier copy.");
-  check(!api.save(api.context, {nullptr, 1}), "Invalid host buffer did not report failure.");
-  check(!copied(api.last_error(api.context)).empty(), "Native exception had no diagnostic.");
-  check(wodex::load_file(path) == binary, "Failed host write damaged the existing save.");
-}
 
 void test_input(WodexHostApi &api) {
   api.text_input(api.context, true);
@@ -123,22 +101,7 @@ void test_input(WodexHostApi &api) {
 }
 
 void test_services(WodexHostApi &api) {
-  check(!api.is_switch(api.context), "Desktop host reported a Switch platform.");
-  check(!api.network_active(api.context), "New host reported an active network request.");
-  check(api.poll_transport(api.context).kind == 0, "New host had a transport event.");
-  check(!api.update_supported(api.context), "Desktop host allowed executable replacement.");
-  check(api.update_status(api.context).phase == 0, "New updater was not idle.");
-  bool ready = true;
-  check(api.prepare_install(api.context, &ready) && !ready,
-        "Host prepared an installation without a supported target.");
-  check(api.update_download(api.context), "Updater callback failed unexpectedly.");
-  const auto status = api.update_status(api.context);
-  check(status.phase == 7 && !copied(status.message).empty(),
-        "Unchecked download did not produce a useful updater error.");
-  check(SDL_setenv("DEEPSEEK_API_KEY", "host-environment-test", 1) == 0,
-        "Cannot set test environment key.");
-  check(copied(api.environment_key(api.context)) == "host-environment-test",
-        "Environment key was not exposed to the Rust application.");
+  check(api.running(api.context), "Desktop platform was not running.");
   check(SDL_SetClipboardText("粘贴 text") == 0, "Cannot set the test clipboard.");
   check(copied(api.clipboard(api.context)) == "粘贴 text", "Clipboard UTF-8 text was altered.");
 }
@@ -151,9 +114,8 @@ int main(int argc, char **argv) {
     SdlRuntime sdl;
     TemporaryStorage storage;
     wodex::Platform platform(argv[1]);
-    wodex::NativeBackend backend(platform, "0.2.0", "");
-    auto api = backend.api();
-    test_storage(api, platform.data_dir() + "/state.json");
+    wodex::NativeBindings bindings(platform);
+    auto api = bindings.api();
     test_input(api);
     test_services(api);
     std::cout << "Native host: " << passed << " checks passed.\n";

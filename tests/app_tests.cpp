@@ -1,4 +1,5 @@
 #include "platform.hpp"
+#include "storage.hpp"
 #include "wodex_app.h"
 #include "wodex_core.h"
 #include "wodex_host.h"
@@ -69,10 +70,10 @@ public:
 class AppSession {
 public:
   AppSession(wodex::Platform &platform, SDL_Renderer *renderer, bool updates = false)
-    : backend_(platform, "0.2.0", ""), host_(backend_.api()),
+    : bindings_(platform), host_(bindings_.api()),
       render_(wodex_render_api(renderer, &platform)), app_(nullptr, wodex_app_free) {
     char *error = nullptr;
-    app_.reset(wodex_app_new(&host_, &render_, "0.2.0", false, updates, &error));
+    app_.reset(wodex_app_new(&host_, &render_, &backend_, "0.2.0", "", false, updates, &error));
     check_app(app_ != nullptr, error);
     frame();
   }
@@ -124,7 +125,8 @@ private:
     if (SDL_PushEvent(&event) != 1) throw std::runtime_error(SDL_GetError());
     frame();
   }
-  wodex::NativeBackend backend_;
+  wodex::NativeBindings bindings_;
+  WodexBackendApi backend_{wodex_native_fs_api(), *wodex_runtime_api(), *wodex_http_api()};
   WodexHostApi host_;
   WodexRenderApi render_;
   std::unique_ptr<WodexApp, decltype(&wodex_app_free)> app_;

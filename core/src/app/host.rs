@@ -1,6 +1,14 @@
 //! Platform services behind a borrowed C callback table. Application and input
 //! decisions remain in Rust; callbacks only translate native events and perform I/O.
-use alloc::{string::String, vec::Vec};
+use crate::backend::{
+  http::Http,
+  runtime::Runtime,
+  storage::Fs,
+  transport::Transport,
+  updater::{PendingUpdate, Updater},
+  BackendApi,
+};
+use alloc::{collections::VecDeque, format, string::String, vec::Vec};
 use core::{ffi::c_void, slice};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -171,50 +179,14 @@ pub struct NativeInput {
   pub text: Bytes,
 }
 
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct NativeTransportEvent {
-  pub kind: u32,
-  pub data: Bytes,
-  pub http_status: u16,
-  pub error: Bytes,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct NativeUpdateStatus {
-  pub phase: u32,
-  pub message: Bytes,
-  pub version: Bytes,
-  pub notes: Bytes,
-  pub downloaded: u64,
-  pub total: u64,
-}
-
-/// All callbacks are nonthrowing. Returned slices remain valid until the next
-/// callback on this context. The application must not use a table concurrently.
+/// Native callbacks expose platform and SDL bindings only. Storage, HTTP and
+/// update policy are Rust-owned and use separate primitive backend tables.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct HostApi {
   pub context: *mut c_void,
   pub now_ms: unsafe extern "C" fn(*mut c_void) -> u64,
   pub running: unsafe extern "C" fn(*mut c_void) -> bool,
-  pub is_switch: unsafe extern "C" fn(*mut c_void) -> bool,
-  pub load: unsafe extern "C" fn(*mut c_void, *mut Bytes) -> bool,
-  pub save: unsafe extern "C" fn(*mut c_void, Bytes) -> bool,
-  pub preserve: unsafe extern "C" fn(*mut c_void, Bytes) -> bool,
-  pub environment_key: unsafe extern "C" fn(*mut c_void) -> Bytes,
-  pub start: unsafe extern "C" fn(*mut c_void, Bytes, Bytes, Bytes) -> bool,
-  pub cancel: unsafe extern "C" fn(*mut c_void),
-  pub network_active: unsafe extern "C" fn(*mut c_void) -> bool,
-  pub poll_transport: unsafe extern "C" fn(*mut c_void) -> NativeTransportEvent,
-  pub update_status: unsafe extern "C" fn(*mut c_void) -> NativeUpdateStatus,
-  pub update_supported: unsafe extern "C" fn(*mut c_void) -> bool,
-  pub update_active: unsafe extern "C" fn(*mut c_void) -> bool,
-  pub update_check: unsafe extern "C" fn(*mut c_void, Bytes) -> bool,
-  pub update_download: unsafe extern "C" fn(*mut c_void) -> bool,
-  pub update_cancel: unsafe extern "C" fn(*mut c_void),
-  pub prepare_install: unsafe extern "C" fn(*mut c_void, *mut bool) -> bool,
   pub begin_frame: unsafe extern "C" fn(*mut c_void),
   pub poll_input: unsafe extern "C" fn(*mut c_void) -> NativeInput,
   pub text_input: unsafe extern "C" fn(*mut c_void, bool),
@@ -225,14 +197,70 @@ pub struct HostApi {
 
 pub struct NativeHost {
   api: HostApi,
+  fs: Fs,
+  save_path: String,
+  transport: Transport,
+  updater: Updater,
+  transport_events: VecDeque<TransportEvent>,
+  install_supported: bool,
+  pending: Option<PendingUpdate>,
+}
+
+/// The loader path must designate the current SD-card executable, including
+/// when launched from a nondefault directory. Backup NROs stay recovery-only.
+fn install_target(path: &str, is_switch: bool) -> String {
+  if !is_switch
+    || !(11..=768).contains(&path.len())
+    || !path.starts_with("sdmc:/")
+    || !path.ends_with(".nro")
+    || path.ends_with(".previous.nro")
+    || path.contains('\\')
+    || path.contains("//")
+    || path.contains("/../")
+    || path.contains("/./")
+    || path.bytes().any(|byte| byte < 0x20 || byte == 0x7f)
+  {
+    String::new()
+  } else {
+    path.into()
+  }
 }
 
 impl NativeHost {
   /// # Safety
-  /// Every callback and its context must remain valid until this host is dropped.
-  /// Callbacks must implement the borrowing and nonthrowing contract of HostApi.
-  pub unsafe fn new(api: &HostApi) -> Self {
-    Self { api: *api }
+  /// All tables and native contexts must outlive this host. The backend callbacks
+  /// must be nonthrowing and support their documented worker-thread use.
+  pub unsafe fn new(
+    api: &HostApi,
+    backend: &BackendApi,
+    version: &str,
+    target: &str,
+  ) -> Result<Self, String> {
+    let fs = Fs::new(&backend.fs);
+    let directory = fs.data_dir()?;
+    let runtime = Runtime::new(&backend.runtime);
+    let http = Http::new(&backend.http)?;
+    let target = install_target(target, fs.is_switch());
+    let install_supported = !target.is_empty();
+    let ca_bundle =
+      if fs.is_switch() { "romfs:/cacert.pem".into() } else { fs.environment("WODEX_CA_BUNDLE") };
+    let transport = Transport::new(runtime, http, ca_bundle.clone())?;
+    let updater =
+      Updater::new(runtime, http, fs, version.into(), target, String::new(), ca_bundle)?;
+    Ok(Self {
+      api: *api,
+      fs,
+      save_path: format!("{directory}/state.json"),
+      transport,
+      updater,
+      transport_events: VecDeque::new(),
+      install_supported,
+      pending: None,
+    })
+  }
+
+  pub fn take_pending(&mut self) -> Option<PendingUpdate> {
+    self.pending.take()
   }
 
   fn checked(&self, success: bool) -> Result<(), String> {
@@ -244,6 +272,14 @@ impl NativeHost {
   }
 }
 
+impl Drop for NativeHost {
+  fn drop(&mut self) {
+    self.transport.cancel();
+    self.updater.cancel();
+    // Each Rust backend joins its own worker before its shared data is dropped.
+  }
+}
+
 impl Host for NativeHost {
   fn now_ms(&self) -> u64 {
     unsafe { (self.api.now_ms)(self.api.context) }
@@ -252,90 +288,59 @@ impl Host for NativeHost {
     unsafe { (self.api.running)(self.api.context) }
   }
   fn is_switch(&self) -> bool {
-    unsafe { (self.api.is_switch)(self.api.context) }
+    self.fs.is_switch()
   }
   fn load(&mut self) -> Result<Vec<u8>, String> {
-    let mut output = Bytes::empty();
-    self.checked(unsafe { (self.api.load)(self.api.context, &mut output) })?;
-    Ok(unsafe { output.bytes() }.to_vec())
+    self.fs.load_file(&self.save_path)
   }
   fn save(&mut self, content: &str) -> Result<(), String> {
-    self.checked(unsafe { (self.api.save)(self.api.context, Bytes::from_str(content)) })
+    self.fs.atomic_write(&self.save_path, content.as_bytes())
   }
   fn preserve(&mut self, content: &[u8]) -> Result<(), String> {
-    self.checked(unsafe {
-      (self.api.preserve)(self.api.context, Bytes { data: content.as_ptr(), len: content.len() })
-    })
+    self.fs.preserve_file(&self.save_path, content).map(|_| ())
   }
   fn environment_key(&self) -> String {
-    unsafe { (self.api.environment_key)(self.api.context).string() }
+    self.fs.environment("DEEPSEEK_API_KEY")
   }
   fn start(&mut self, url: &str, key: &str, body: &str) -> Result<(), String> {
-    self.checked(unsafe {
-      (self.api.start)(
-        self.api.context,
-        Bytes::from_str(url),
-        Bytes::from_str(key),
-        Bytes::from_str(body),
-      )
-    })
+    self.transport.start(url, key, body)
   }
   fn cancel(&mut self) {
-    unsafe { (self.api.cancel)(self.api.context) }
+    self.transport.cancel();
   }
   fn network_active(&self) -> bool {
-    unsafe { (self.api.network_active)(self.api.context) }
+    self.transport.active()
   }
   fn poll_transport(&mut self) -> Option<TransportEvent> {
-    let event = unsafe { (self.api.poll_transport)(self.api.context) };
-    match event.kind {
-      1 => Some(TransportEvent::Data(unsafe { event.data.bytes() }.to_vec())),
-      2 => Some(TransportEvent::Finished {
-        http_status: event.http_status,
-        error: unsafe { event.error.string() },
-      }),
-      _ => None,
+    if self.transport_events.is_empty() {
+      self.transport_events.extend(self.transport.poll());
     }
+    self.transport_events.pop_front()
   }
   fn update_status(&self) -> UpdateStatus {
-    let status = unsafe { (self.api.update_status)(self.api.context) };
-    UpdateStatus {
-      phase: match status.phase {
-        0 => UpdatePhase::Idle,
-        1 => UpdatePhase::Checking,
-        2 => UpdatePhase::Current,
-        3 => UpdatePhase::Available,
-        4 => UpdatePhase::Downloading,
-        5 => UpdatePhase::Ready,
-        6 => UpdatePhase::Cancelled,
-        _ => UpdatePhase::Error,
-      },
-      message: unsafe { status.message.string() },
-      version: unsafe { status.version.string() },
-      notes: unsafe { status.notes.string() },
-      downloaded: status.downloaded,
-      total: status.total,
-    }
+    self.updater.status()
   }
   fn update_supported(&self) -> bool {
-    unsafe { (self.api.update_supported)(self.api.context) }
+    self.install_supported
   }
   fn update_active(&self) -> bool {
-    unsafe { (self.api.update_active)(self.api.context) }
+    self.updater.active()
   }
   fn update_check(&mut self, repository: &str) -> Result<(), String> {
-    self.checked(unsafe { (self.api.update_check)(self.api.context, Bytes::from_str(repository)) })
+    self.updater.check(repository)
   }
   fn update_download(&mut self) -> Result<(), String> {
-    self.checked(unsafe { (self.api.update_download)(self.api.context) })
+    self.updater.download()
   }
   fn update_cancel(&mut self) {
-    unsafe { (self.api.update_cancel)(self.api.context) }
+    self.updater.cancel();
   }
   fn prepare_install(&mut self) -> Result<bool, String> {
-    let mut ready = false;
-    self.checked(unsafe { (self.api.prepare_install)(self.api.context, &mut ready) })?;
-    Ok(ready)
+    if self.transport.active() {
+      return Err("Wait for the response to finish before installing.".into());
+    }
+    self.pending = self.updater.pending_install();
+    Ok(self.install_supported && self.pending.is_some())
   }
   fn begin_frame(&mut self) {
     unsafe { (self.api.begin_frame)(self.api.context) }
@@ -360,6 +365,9 @@ impl Host for NativeHost {
     unsafe { (self.api.clipboard)(self.api.context).string() }
   }
   fn edit_system(&mut self, title: &str, initial: &str, secret: bool) -> Result<String, String> {
+    if self.fs.is_switch() && initial.encode_utf16().count() > 249 {
+      return Err("The system keyboard cannot reopen a draft longer than 249 characters. Send or clear this draft first.".into());
+    }
     let mut output = Bytes::empty();
     self.checked(unsafe {
       (self.api.edit_system)(
@@ -371,5 +379,28 @@ impl Host for NativeHost {
       )
     })?;
     Ok(unsafe { output.string() })
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  #[test]
+  fn installation_target_is_the_loader_sd_executable_and_excludes_recovery_paths() {
+    assert_eq!(
+      install_target("sdmc:/switch/custom/wodex.nro", true),
+      "sdmc:/switch/custom/wodex.nro"
+    );
+    for invalid in [
+      "sdmc:/switch/wodex.previous.nro",
+      "sdmc:/switch/../wodex.nro",
+      "sdmc://wodex.nro",
+      "sdmc:/switch/./wodex.nro",
+      "/tmp/wodex.nro",
+      "sdmc:/switch/wodex.nro\n",
+    ] {
+      assert!(install_target(invalid, true).is_empty());
+    }
+    assert!(install_target("sdmc:/switch/wodex.nro", false).is_empty());
   }
 }

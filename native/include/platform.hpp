@@ -40,16 +40,4 @@ private:
 #endif
 };
 
-// Missing files return an empty string. Other failures throw std::runtime_error.
-// A bounded reader prevents malformed local data from exhausting applet memory.
-std::string load_file(const std::string& path);
-
-// Write a private temporary file, flush it, then replace the destination.
-// An interrupted write cannot truncate the previous saved conversation.
-void atomic_write(const std::string& path, const std::string& content);
-
-// Preserve unreadable data without replacing an earlier recovery file.
-// Returns the new path (path + ".recovery-N"). The source path is untouched.
-std::string preserve_file(const std::string& path, const std::string& content);
-
 }  // namespace wodex

@@ -27,7 +27,7 @@ PKG_LIBS := $(shell $(PKG_CONFIG) --static --libs $(PACKAGES))
 RUST_LIB ?= $(PROJECT_ROOT)/target/aarch64-nintendo-switch-freestanding/release/libwodex_core.a
 ARCH := -march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE
 CPPFLAGS := -D__SWITCH__ -DWODEX_VERSION='"$(APP_VERSION)"' \
-  -I$(PROJECT_ROOT)/native/include -I$(PROJECT_ROOT)/external \
+  -I$(PROJECT_ROOT)/native/include \
   -I$(DEVKITPRO)/libnx/include $(PKG_CFLAGS)
 CXXFLAGS := -std=c++17 -O2 -g -Wall -Wextra -ffunction-sections -fdata-sections \
   -pthread $(ARCH)
@@ -39,7 +39,7 @@ LIBPATHS := -L$(DEVKITPRO)/libnx/lib -L$(DEVKITPRO)/portlibs/switch/lib
 LIBS := -Wl,--start-group $(RUST_LIB) $(PKG_LIBS) -lpthread -lnx -lc -lm -lstdc++ -Wl,--end-group
 LD := $(CXX)
 # Only platform adapters remain native; application/views/layout are Rust.
-SOURCES := $(addprefix $(PROJECT_ROOT)/native/src/,main.cpp host.cpp render_backend.cpp platform.cpp transport.cpp updater.cpp)
+SOURCES := $(addprefix $(PROJECT_ROOT)/native/src/,main.cpp host.cpp render_backend.cpp platform.cpp fs_bindings.cpp http_bindings.cpp runtime_bindings.cpp)
 OFILES := $(patsubst $(PROJECT_ROOT)/native/src/%.cpp,$(BUILD_DIR)/%.o,$(SOURCES))
 REQUIRED_ROMFS_FILES := $(PROJECT_ROOT)/romfs/cacert.pem \
   $(PROJECT_ROOT)/romfs/fonts/NotoSansCJKsc-Regular.otf \

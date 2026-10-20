@@ -3,6 +3,7 @@
 extern crate alloc;
 
 mod app;
+mod backend;
 mod ffi;
 mod state;
 mod stream;

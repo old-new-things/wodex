@@ -114,16 +114,17 @@ cmake --build build/desktop --parallel
 ctest --test-dir build/desktop --output-on-failure
 ```
 
-The integration tests start isolated loopback mock servers. They drive the Rust application through SDL input and real curl transport, and test fragmented UTF-8 streams, reasoning, usage, retry, HTTP errors, cancellation, queue limits, and durable storage. Update tests verify downloads, checksums, release source restrictions, cancellation, backup preservation and rollback failures. Font tests exercise the production Rust renderer with real Chinese and mixed-language fonts; UI smoke tests render chat and update pages. No tests require a real API key or spend API credits.
+The integration tests start isolated loopback mock servers. They drive the Rust application through SDL input and the Rust network backend's real curl bindings, and test fragmented UTF-8 streams, reasoning, usage, retry, HTTP errors, cancellation, queue limits, and durable storage. Update tests exercise the Rust updater's downloads, checksums, release source restrictions, cancellation, backup preservation and rollback failures. Rust fault-injection tests cover short/interrupted writes, failed flushes, save rotation and rollback. Font tests exercise the production Rust renderer with real Chinese and mixed-language fonts; UI smoke tests render chat and update pages. No tests require a real API key or spend API credits.
 
 ## Source map
 
 - `core/src/app/`: Rust views, editor, text layout/cache, platform interfaces, and tests.
 - `core/src/app.rs`: Rust application actions, navigation, chat/update coordination, and saving.
+- `core/src/backend/`: Rust HTTP policy, workers, streaming queues, durable storage, font selection, updater, installation and rollback.
 - `core/src/`: conversation state, validation, persistence model, SSE parser, release validation, and C ABI.
-- `native/`: SDL/TTF primitives, input normalization, libnx services, storage, curl/update workers, and process lifecycle.
+- `native/`: SDL/TTF, libnx, POSIX filesystem, curl and thread/mutex bindings, input normalization, and process lifecycle.
 - `scripts/`: desktop dependency fallback and Switch build.
-- `tests/`: native integration suite and local mock API.
+- `tests/`: integration suites, local mock APIs, and test-only C++ facades that call the production Rust backends.
 - `romfs/`: bundled CJK font, license/attribution, and public CA certificates.
 
 Wodex code is MIT licensed. Third-party notices are in [THIRD_PARTY.md](THIRD_PARTY.md).

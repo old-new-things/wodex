@@ -1,4 +1,5 @@
 #include "platform.hpp"
+#include "storage.hpp"
 #include "transport.hpp"
 #include "wodex_core.h"
 

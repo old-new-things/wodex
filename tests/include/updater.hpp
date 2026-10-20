@@ -1,5 +1,7 @@
 #pragma once
 
+// Test-only facade around the production Rust updater and installer.
+
 #include <cstdint>
 #include <memory>
 #include <optional>

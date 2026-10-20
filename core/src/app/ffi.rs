@@ -1,5 +1,6 @@
 //! Narrow ownership boundary used by the native process entry point.
 use super::{canvas::RenderApi, host::HostApi, host::NativeHost, App, Canvas};
+use crate::backend::{BackendApi, PendingHandle};
 use alloc::{boxed::Box, ffi::CString, string::String};
 use core::ffi::{c_char, CStr};
 
@@ -20,7 +21,9 @@ unsafe fn report_error(output: *mut *mut c_char, message: &str) {
 pub unsafe extern "C" fn wodex_app_new(
   host: *const HostApi,
   render: *const RenderApi,
+  backend: *const BackendApi,
   version: *const c_char,
+  target: *const c_char,
   demo: bool,
   show_updates: bool,
   error: *mut *mut c_char,
@@ -29,15 +32,19 @@ pub unsafe extern "C" fn wodex_app_new(
     *error = core::ptr::null_mut();
   }
   let result: Result<WodexApp, String> = (|| {
-    let (Some(host), Some(render)) = (host.as_ref(), render.as_ref()) else {
+    let (Some(host), Some(render), Some(backend)) =
+      (host.as_ref(), render.as_ref(), backend.as_ref())
+    else {
       return Err("Missing native application services.".into());
     };
-    if version.is_null() {
+    if version.is_null() || target.is_null() {
       return Err("Missing application version.".into());
     }
     let version = CStr::from_ptr(version).to_str().map_err(|_| "Invalid application version.")?;
+    let target = CStr::from_ptr(target).to_str().map_err(|_| "Invalid executable path.")?;
     let canvas = Canvas::new(render)?;
-    let app = App::new(NativeHost::new(host), version, demo, show_updates)?;
+    let app =
+      App::new(NativeHost::new(host, backend, version, target)?, version, demo, show_updates)?;
     Ok(WodexApp { app, canvas })
   })();
   match result {
@@ -90,4 +97,12 @@ pub unsafe extern "C" fn wodex_app_free(app: *mut WodexApp) {
   if !app.is_null() {
     drop(Box::from_raw(app));
   }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn wodex_app_take_pending(app: *mut WodexApp) -> *mut PendingHandle {
+  app
+    .as_mut()
+    .and_then(|app| app.app.host.take_pending())
+    .map_or(core::ptr::null_mut(), |value| Box::into_raw(Box::new(PendingHandle { value })))
 }

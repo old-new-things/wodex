@@ -43,7 +43,6 @@ for resource_path in \
   romfs/cacert.pem \
   romfs/fonts/NotoSansCJKsc-Regular.otf \
   romfs/fonts/OFL.txt \
-  external/nlohmann/json.hpp \
   assets/icon.jpg; do
   if [[ ! -f "${project_root}/${resource_path}" || ! -s "${project_root}/${resource_path}" ]]; then
     printf 'Missing or empty build resource: %s. Restore the vendored file before building.\n' "${resource_path}" >&2
