@@ -2,7 +2,7 @@
 
 A native DeepSeek chat client for Nintendo Switch homebrew, with a desktop build for development. Inspired by wiliwili's controller navigation and readable handheld interface.
 
-The app is implemented: it streams replies, saves conversations, supports thinking mode, and uses the Switch system keyboard. A real ARM64 `.nro` has been cross-compiled and linked. Physical Switch testing and a live request with your own DeepSeek key are still required.
+The app is implemented: it streams replies, saves conversations, supports thinking mode, includes a Chinese-capable font, and uses the Switch system keyboard. A real ARM64 `.nro` has been cross-compiled and linked. Physical Switch testing and a live request with your own DeepSeek key are still required.
 
 ![Desktop preview](docs/preview.png)
 
@@ -52,7 +52,7 @@ cmake --build build/desktop --parallel
 ./build/desktop/wodex --demo
 ```
 
-Desktop controls: arrows and Enter select; **X** opens the composer; **Ctrl/Cmd + Enter** sends; **Esc** goes back/stops; **F1** opens Settings; **[ / ]** changes chats; **Page Up/Down**, the mouse wheel, and **End** navigate history. The text editor supports UTF-8, IME input, cursor movement, selection of all text, paste, and Shift+Enter for newlines. Desktop gamepads use SDL's standard button mapping.
+Desktop controls: arrows and Enter select; **X** opens the composer; **Ctrl/Cmd + Enter** sends; **Esc** goes back/stops; **F1** opens Settings; **[ / ]** changes chats; **Page Up/Down**, the mouse wheel, and **End** navigate history. The text editor supports UTF-8, IME input, cursor movement, selection of all text, paste, and Shift+Enter for newlines. Desktop gamepads use SDL's standard button mapping. Keep the generated `resources/` directory beside the desktop executable when moving it.
 
 `--demo` displays an explicitly labeled sample conversation without network requests or saving history. `--screenshot FILE.bmp` renders one frame and exits; combine it with `SDL_VIDEODRIVER=dummy` for a headless preview.
 
@@ -60,7 +60,7 @@ Desktop controls: arrows and Enter select; **X** opens the composer; **Ctrl/Cmd 
 | --- | --- |
 | `DEEPSEEK_API_KEY` | Desktop session key override; never writes that override to disk |
 | `WODEX_DATA_DIR` | Desktop data directory override |
-| `WODEX_FONT` | Desktop TrueType font path, useful for CJK coverage |
+| `WODEX_FONT` | Desktop TrueType/OpenType font override; otherwise uses the bundled CJK font |
 | `WODEX_CA_BUNDLE` | Desktop custom CA bundle for HTTPS verification |
 
 ## Build for Switch
@@ -86,7 +86,15 @@ The verified SDK image is `devkitpro/devkita64:20260219`. [Architecture and buil
 - HTTPS certificates are verified, redirects are refused, and provider error bodies are not displayed. Plain HTTP is limited to loopback addresses for local tests.
 - Limits: 32 conversations, 128 messages per conversation, 64 KiB per prompt, 512 KiB combined answer/reasoning, 2 MiB total message text, and 4 MiB saved JSON. Delete an older conversation when storage is full. Long answers remain fully scrollable.
 
-Current scope is text chat. Markdown is displayed as readable text; tool execution, attachments, image generation, search, and account login are outside this release. Switch keyboard input follows libnx's size limits; a very long existing draft cannot be reopened without shortening it. Shared fonts follow the Switch system language, and glyph coverage depends on that font.
+Current scope is text chat. Markdown is displayed as readable text; tool execution, attachments, image generation, search, and account login are outside this release. Switch keyboard input follows libnx's size limits; a very long existing draft cannot be reopened without shortening it.
+
+## Fonts and Chinese text
+
+Wodex includes **Noto Sans CJK SC Regular 2.004**, an unmodified, openly licensed OpenType font. It supports broad Simplified Chinese, Traditional Chinese, Japanese, Korean and Latin text. Regional glyph shapes follow the Simplified Chinese variant; it does not contain every Unicode character or all emoji. Its license and provenance are included in `romfs/fonts/`.
+
+The full 16,437,364-byte font is embedded in the Switch NRO's RomFS, so Chinese replies do not depend on the console's language or a separately installed font. A UI-text-only subset would miss characters in model replies. Desktop builds copy the same font into `resources/fonts/` beside the executable, and locate it independently of the working directory.
+
+SDL_ttf/FreeType reads UTF-8 text using the font's stream API; Wodex does not manually copy the full file for every point size. Text layout and visible texture caches remain bounded. If the bundled font is absent at runtime, Switch falls back to its system-language shared font and desktop falls back to a system font. This is a whole-font fallback, not a per-character fallback chain. `WODEX_FONT` overrides the desktop choice, so that font needs the glyph coverage you want.
 
 ## Verify
 
@@ -98,7 +106,7 @@ cmake --build build/desktop --parallel
 ctest --test-dir build/desktop --output-on-failure
 ```
 
-The native tests start an isolated loopback mock server. They test real curl transport against the Rust core, including fragmented UTF-8 streams, reasoning, usage, retry, HTTP errors, cancellation, queue limits, and durable storage. The UI smoke test renders a headless frame. No tests require a real API key or spend API credits.
+The native tests start an isolated loopback mock server. They test real curl transport against the Rust core, including fragmented UTF-8 streams, reasoning, usage, retry, HTTP errors, cancellation, queue limits, and durable storage. Font tests check Chinese and mixed-language glyph coverage and render wrapped text; the UI smoke test renders a headless frame. No tests require a real API key or spend API credits.
 
 ## Source map
 

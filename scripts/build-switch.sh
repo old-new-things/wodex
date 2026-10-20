@@ -29,10 +29,17 @@ if [[ ! -x "${pkg_config}" ]] || ! "${pkg_config}" --exists sdl2 SDL2_ttf libcur
   exit 1
 fi
 
-if [[ ! -f "${project_root}/romfs/cacert.pem" || ! -f "${project_root}/external/nlohmann/json.hpp" ]]; then
-  printf 'Missing vendored CA bundle or JSON header. Restore romfs/cacert.pem and external/nlohmann/json.hpp.\n' >&2
-  exit 1
-fi
+for resource_path in \
+  romfs/cacert.pem \
+  romfs/fonts/NotoSansCJKsc-Regular.otf \
+  romfs/fonts/OFL.txt \
+  external/nlohmann/json.hpp \
+  assets/icon.jpg; do
+  if [[ ! -f "${project_root}/${resource_path}" || ! -s "${project_root}/${resource_path}" ]]; then
+    printf 'Missing or empty build resource: %s. Restore the vendored file before building.\n' "${resource_path}" >&2
+    exit 1
+  fi
+done
 
 if ! rustup run "${toolchain}" rustc --version >/dev/null 2>&1; then
   printf 'Install the Rust build toolchain: rustup toolchain install %s --profile minimal --component rust-src\n' "${toolchain}" >&2

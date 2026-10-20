@@ -10,6 +10,24 @@ find_package(CURL REQUIRED)
 find_package(Threads REQUIRED)
 find_program(CARGO_EXECUTABLE cargo REQUIRED)
 
+set(WODEX_FONT "${CMAKE_SOURCE_DIR}/romfs/fonts/NotoSansCJKsc-Regular.otf")
+if(NOT EXISTS "${WODEX_FONT}" OR NOT EXISTS "${CMAKE_SOURCE_DIR}/romfs/fonts/OFL.txt")
+  message(FATAL_ERROR "Missing bundled Noto font or license. Restore romfs/fonts from Git.")
+endif()
+file(SHA256 "${WODEX_FONT}" WODEX_FONT_SHA256)
+if(NOT WODEX_FONT_SHA256 STREQUAL "2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b")
+  message(FATAL_ERROR "Bundled Noto font checksum does not match the pinned Sans2.004 release.")
+endif()
+file(GLOB_RECURSE WODEX_FONT_RESOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/romfs/fonts/*")
+set(WODEX_RESOURCE_DIR "${CMAKE_BINARY_DIR}/resources")
+add_custom_command(OUTPUT "${WODEX_RESOURCE_DIR}/fonts.stamp"
+  COMMAND "${CMAKE_COMMAND}" -E make_directory "${WODEX_RESOURCE_DIR}/fonts"
+  COMMAND "${CMAKE_COMMAND}" -E copy_directory "${CMAKE_SOURCE_DIR}/romfs/fonts" "${WODEX_RESOURCE_DIR}/fonts"
+  COMMAND "${CMAKE_COMMAND}" -E touch "${WODEX_RESOURCE_DIR}/fonts.stamp"
+  DEPENDS ${WODEX_FONT_RESOURCES}
+  COMMENT "Copying licensed CJK font resources")
+add_custom_target(wodex_resources DEPENDS "${WODEX_RESOURCE_DIR}/fonts.stamp")
+
 if(NOT TARGET SDL2_ttf::SDL2_ttf AND NOT TARGET SDL2_ttf::SDL2_ttf-static)
   if(NOT EXISTS "${CMAKE_SOURCE_DIR}/external/SDL2_ttf-2.24.0/CMakeLists.txt")
     message(FATAL_ERROR "Install SDL2_ttf development files or run scripts/setup-desktop.sh")
@@ -49,6 +67,7 @@ target_link_libraries(wodex_platform PUBLIC CURL::libcurl Threads::Threads)
 target_compile_options(wodex_platform PRIVATE -Wall -Wextra -Wpedantic)
 
 add_executable(wodex native/src/main.cpp native/src/ui.cpp)
+add_dependencies(wodex wodex_resources)
 target_include_directories(wodex PRIVATE native/include external)
 target_link_libraries(wodex PRIVATE wodex_core wodex_platform SDL2::SDL2 ${WODEX_TTF})
 target_compile_options(wodex PRIVATE -Wall -Wextra -Wpedantic)
@@ -70,4 +89,12 @@ if(BUILD_TESTING)
   add_test(NAME ui_render COMMAND wodex --demo --screenshot "${CMAKE_BINARY_DIR}/smoke.bmp")
   set_tests_properties(ui_render PROPERTIES ENVIRONMENT
     "SDL_VIDEODRIVER=dummy;WODEX_DATA_DIR=${CMAKE_BINARY_DIR}/test-data")
+  add_executable(wodex_font_tests tests/font_tests.cpp native/src/ui.cpp)
+  target_include_directories(wodex_font_tests PRIVATE native/include)
+  target_link_libraries(wodex_font_tests PRIVATE wodex_platform SDL2::SDL2 ${WODEX_TTF})
+  target_compile_options(wodex_font_tests PRIVATE -Wall -Wextra -Wpedantic)
+  add_dependencies(wodex_font_tests wodex_resources)
+  add_test(NAME cjk_fonts COMMAND wodex_font_tests "${WODEX_RESOURCE_DIR}")
+  set_tests_properties(cjk_fonts PROPERTIES ENVIRONMENT
+    "SDL_VIDEODRIVER=dummy;WODEX_DATA_DIR=${CMAKE_BINARY_DIR}/font-test-data;WODEX_FONT=")
 endif()

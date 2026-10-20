@@ -6,7 +6,7 @@ Wodex is a native Nintendo Switch homebrew client with a desktop development bui
 
 - `core/` is the Rust conversation and protocol engine. It validates settings, constructs request bodies, incrementally decodes Server-Sent Events, tracks cancellation and retry, and serializes versioned local history. The Switch build uses `no_std` plus `alloc`; host tests use the same logic with Rust's standard library.
 - `native/src/main.cpp` owns the application loop, focus navigation, conversation views and input. `ui.cpp` draws the controller-oriented interface with SDL2 and SDL2_ttf at a logical 1280×720 resolution.
-- `native/src/platform.cpp` owns Switch services, shared fonts, the system keyboard and local storage. The desktop implementation provides the same interface for development and testing.
+- `native/src/platform.cpp` owns Switch services, bundled-font selection, the system keyboard and local storage. The desktop implementation provides the same interface for development and testing.
 - `native/src/transport.cpp` runs libcurl on a worker thread and passes bounded data chunks to the main thread. Only the main thread calls the Rust engine. HTTPS verifies certificates; the Switch package embeds a public CA bundle in RomFS.
 - `native/include/wodex_core.h` is the C ABI boundary. Rust owns each returned string until the native caller releases it with `wodex_string_free`.
 
@@ -14,9 +14,17 @@ Rust's [Nintendo Switch target](https://doc.rust-lang.org/rustc/platform-support
 
 Wiliwili is the interaction reference: a controller-first application with readable text and direct platform integration. Wodex uses SDL2 rather than Wiliwili's Borealis UI library, so its small custom renderer can be built and exercised on desktop with the same native sources. See the official [libnx application template](https://github.com/switchbrew/switch-examples/tree/master/templates/application) and [SDL2 example](https://github.com/switchbrew/switch-examples/tree/master/graphics/sdl2/sdl2-simple) for the underlying homebrew build conventions.
 
+## Chinese font resources
+
+Both builds bundle Noto Sans CJK SC Regular as an OpenType font, together with its SIL Open Font License. The full font is retained rather than a subset of sample characters, so ordinary Chinese prompts and answers do not depend on the console's system language or a developer's installed fonts. The pinned font and attribution are documented in `THIRD_PARTY.md`.
+
+On Switch, SDL2_ttf opens `romfs:/fonts/NotoSansCJKsc-Regular.otf`. On desktop, the build copies resources beside the executable and the application resolves `resources/fonts/NotoSansCJKsc-Regular.otf` through `SDL_GetBasePath`, so launching from a different working directory still finds the font. An explicit desktop `WODEX_FONT` setting takes precedence.
+
+The platform retains system-font fallbacks for development builds whose bundled resources are absent. Normal Switch builds reject missing font or license files, including when Make is invoked directly in the SDK container. The Makefile tracks nested RomFS files and directory changes so replacing a font, adding an asset or removing a resource repackages the NRO.
+
 ## Reproduce the Switch build
 
-The verified toolchain is Rust `nightly-2026-10-01` and the official `devkitpro/devkita64:20260219` image, containing devkitA64 GCC 15.2.0 and libnx 4.12.0. The JSON header and CA bundle are vendored in this repository.
+The verified toolchain is Rust `nightly-2026-10-01` and the official `devkitpro/devkita64:20260219` image, containing devkitA64 GCC 15.2.0 and libnx 4.12.0. The JSON header, CA bundle, Chinese font and font license are vendored in this repository.
 
 When the host has a devkitPro installation, install `switch-dev`, `switch-sdl2`, `switch-sdl2_ttf`, `switch-curl` and `switch-pkg-config`, then run:
 
@@ -60,4 +68,4 @@ Outputs are `build/switch/wodex.nro`, `wodex.elf`, `wodex.nacp`, `wodex.map` and
 
 The Rust Switch-target archive and complete native NRO have been built with the toolchain above. Native integration tests use a local mock API to exercise the transport and persistence without a paid API key. GitHub Actions repeats Rust checks, the desktop build and the Switch NRO build. CI has been configured locally; it runs after the repository is pushed to GitHub.
 
-Execution on physical Switch hardware remains necessary to verify graphics performance, shared-font coverage, the software keyboard and networking under the device's firmware and homebrew launch mode. The generated NRO is a build-verified artifact, not evidence of a completed hardware test.
+Execution on physical Switch hardware remains necessary to verify graphics performance, bundled-font rendering, the software keyboard and networking under the device's firmware and homebrew launch mode. The generated NRO is a build-verified artifact, not evidence of a completed hardware test.

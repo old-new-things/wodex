@@ -8,7 +8,8 @@ namespace wodex {
 // Keep Platform alive until after all fonts and network transports are destroyed.
 class Platform {
 public:
-  Platform();
+  // Desktop resources live beside the executable. Switch uses its mounted RomFS.
+  explicit Platform(const std::string& resource_dir = "");
   ~Platform();
   Platform(const Platform&) = delete;
   Platform& operator=(const Platform&) = delete;

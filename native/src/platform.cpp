@@ -116,49 +116,53 @@ void create_directories(const std::string& path) {
 #endif
 }
 
-#ifndef __SWITCH__
 bool readable_file(const std::string& path) {
   struct stat status{};
   return !path.empty() && ::stat(path.c_str(), &status) == 0 &&
     S_ISREG(status.st_mode) && ::access(path.c_str(), R_OK) == 0;
 }
-#endif
 
 }  // namespace
 
-Platform::Platform() {
+Platform::Platform(const std::string& resource_dir) {
   try {
 #ifdef __SWITCH__
     if (R_FAILED(socketInitializeDefault())) throw std::runtime_error("Cannot initialize Switch sockets.");
     sockets_ready_ = true;
     if (R_FAILED(nifmInitialize(NifmServiceType_User))) throw std::runtime_error("Cannot initialize Switch networking.");
     network_ready_ = true;
-    if (R_FAILED(plInitialize(PlServiceType_User))) throw std::runtime_error("Cannot initialize Switch fonts.");
-    fonts_ready_ = true;
     if (R_FAILED(romfsInit())) throw std::runtime_error("Cannot mount application assets.");
     romfs_ready_ = true;
-    PlFontData font{};
-    bool selected_font = false;
-    if (R_SUCCEEDED(setInitialize())) {
-      u64 language = 0;
-      const Result language_result = setGetSystemLanguage(&language);
-      setExit();
-      if (R_SUCCEEDED(language_result)) {
-        std::array<PlFontData, PlSharedFontType_Total> fonts{};
-        s32 count = 0;
-        if (R_SUCCEEDED(plGetSharedFont(language, fonts.data(),
-            static_cast<s32>(fonts.size()), &count)) && count > 0) {
-          // Prioritize the console language, including its CJK glyph coverage.
-          font = fonts.front();
-          selected_font = font.address != nullptr && font.size > 0;
+    static_cast<void>(resource_dir);
+    const std::string bundled_font = "romfs:/fonts/NotoSansCJKsc-Regular.otf";
+    if (readable_file(bundled_font)) {
+      font_path_ = bundled_font;
+    } else {
+      if (R_FAILED(plInitialize(PlServiceType_User))) throw std::runtime_error("Cannot initialize Switch fonts.");
+      fonts_ready_ = true;
+      PlFontData font{};
+      bool selected_font = false;
+      if (R_SUCCEEDED(setInitialize())) {
+        u64 language = 0;
+        const Result language_result = setGetSystemLanguage(&language);
+        setExit();
+        if (R_SUCCEEDED(language_result)) {
+          std::array<PlFontData, PlSharedFontType_Total> fonts{};
+          s32 count = 0;
+          if (R_SUCCEEDED(plGetSharedFont(language, fonts.data(),
+              static_cast<s32>(fonts.size()), &count)) && count > 0) {
+            // Prioritize the console language when the bundled font is absent.
+            font = fonts.front();
+            selected_font = font.address != nullptr && font.size > 0;
+          }
         }
       }
+      if (!selected_font && R_FAILED(plGetSharedFontByType(&font, PlSharedFontType_Standard))) {
+        throw std::runtime_error("Cannot load the Switch system font.");
+      }
+      font_data_ = font.address;
+      font_size_ = font.size;
     }
-    if (!selected_font && R_FAILED(plGetSharedFontByType(&font, PlSharedFontType_Standard))) {
-      throw std::runtime_error("Cannot load the Switch system font.");
-    }
-    font_data_ = font.address;
-    font_size_ = font.size;
     data_dir_ = "sdmc:/switch/wodex";
 #else
     data_dir_ = environment("WODEX_DATA_DIR");
@@ -178,6 +182,8 @@ Platform::Platform() {
     if (!configured_font.empty()) {
       if (!readable_file(configured_font)) throw std::runtime_error("WODEX_FONT does not point to a readable font.");
       font_path_ = configured_font;
+    } else if (!resource_dir.empty() && readable_file(resource_dir + "/fonts/NotoSansCJKsc-Regular.otf")) {
+      font_path_ = resource_dir + "/fonts/NotoSansCJKsc-Regular.otf";
     } else {
       const std::array<const char*, 7> candidates = {
         "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
@@ -191,7 +197,7 @@ Platform::Platform() {
       for (const auto* candidate : candidates) {
         if (readable_file(candidate)) { font_path_ = candidate; break; }
       }
-      if (font_path_.empty()) throw std::runtime_error("No font found. Set WODEX_FONT to a TrueType font.");
+      if (font_path_.empty()) throw std::runtime_error("No font found. Set WODEX_FONT to a TrueType or OpenType font.");
     }
 #endif
     create_directories(data_dir_);
@@ -205,8 +211,8 @@ Platform::~Platform() { shutdown(); }
 
 void Platform::shutdown() noexcept {
 #ifdef __SWITCH__
-  if (romfs_ready_) { romfsExit(); romfs_ready_ = false; }
   if (fonts_ready_) { plExit(); fonts_ready_ = false; }
+  if (romfs_ready_) { romfsExit(); romfs_ready_ = false; }
   if (network_ready_) { nifmExit(); network_ready_ = false; }
   if (sockets_ready_) { socketExit(); sockets_ready_ = false; }
 #endif

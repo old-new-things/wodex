@@ -976,7 +976,14 @@ int main(int argc, char **argv) {
     }
   }
   try {
-    Platform platform;
+    std::string resource_dir;
+#ifndef __SWITCH__
+    std::unique_ptr<char, decltype(&SDL_free)> base_path(SDL_GetBasePath(), SDL_free);
+    if (!base_path)
+      throw std::runtime_error("Cannot locate the application resource directory.");
+    resource_dir = std::string(base_path.get()) + "resources";
+#endif
+    Platform platform(resource_dir);
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) != 0)
       throw std::runtime_error(SDL_GetError());
     if (TTF_Init() != 0)

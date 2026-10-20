@@ -35,7 +35,12 @@ LIBS := -Wl,--start-group $(RUST_LIB) $(PKG_LIBS) -lpthread -lnx -lc -lm -lstdc+
 LD := $(CXX)
 SOURCES := $(wildcard $(PROJECT_ROOT)/native/src/*.cpp)
 OFILES := $(patsubst $(PROJECT_ROOT)/native/src/%.cpp,$(BUILD_DIR)/%.o,$(SOURCES))
-ROMFS_FILES := $(wildcard $(PROJECT_ROOT)/romfs/*)
+REQUIRED_ROMFS_FILES := $(PROJECT_ROOT)/romfs/cacert.pem \
+  $(PROJECT_ROOT)/romfs/fonts/NotoSansCJKsc-Regular.otf \
+  $(PROJECT_ROOT)/romfs/fonts/OFL.txt
+# Files track content edits; directories also track nested additions/removals.
+ROMFS_INPUTS := $(shell find "$(PROJECT_ROOT)/romfs" -print)
+$(foreach resource,$(REQUIRED_ROMFS_FILES),$(if $(wildcard $(resource)),,$(error Missing required RomFS resource: $(resource))))
 NROFLAGS := --nacp=$(OUTPUT).nacp --icon=$(APP_ICON) --romfsdir=$(PROJECT_ROOT)/romfs
 
 .PHONY: all
@@ -51,6 +56,6 @@ $(OUTPUT).elf: $(OFILES) $(RUST_LIB) $(PROJECT_ROOT)/scripts/Makefile.switch
 	$(LD) $(LDFLAGS) $(OFILES) $(LIBPATHS) $(LIBS) -o "$@"
 	$(NM) -CSn "$@" > "$(OUTPUT).lst"
 $(OUTPUT).nacp: | $(BUILD_DIR)
-$(OUTPUT).nro: $(OUTPUT).elf $(OUTPUT).nacp $(APP_ICON) $(ROMFS_FILES)
+$(OUTPUT).nro: $(OUTPUT).elf $(OUTPUT).nacp $(APP_ICON) $(REQUIRED_ROMFS_FILES) $(ROMFS_INPUTS)
 
 -include $(OFILES:.o=.d)
