@@ -13,6 +13,8 @@ default = ["std"]
 std = ["serde/std", "serde_json/std"]
 
 [dependencies]
+pulldown-cmark = { git = "https://github.com/pulldown-cmark/pulldown-cmark", rev = "baa6ac73b677c43c075f5b2b8db0b47897fdc021", default-features = false, features = ["hashbrown"] }
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
 sha2 = { version = "0.10.9", default-features = false, features = ["force-soft"] }
+unicode-width = { version = "0.2.2", default-features = false }

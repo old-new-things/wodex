@@ -132,6 +132,78 @@ void check_rendering(const wodex::Platform& platform) {
     check(visible, "Mixed-language text produced no visible pixels.");
     check(wodex_canvas_ok(canvas.get()), "The Rust renderer reported an SDL/TTF error.");
   }
+
+  const char* styled = "Markdown 中文𠮷";
+  const int normal_width = wodex_canvas_text_width(canvas.get(), styled, 22);
+  std::vector<std::vector<Uint32>> style_pixels;
+  for (const auto style : std::array<uint32_t, 4>{
+      WODEX_FONT_NORMAL, WODEX_FONT_BOLD, WODEX_FONT_ITALIC, WODEX_FONT_BOLD_ITALIC}) {
+    SDL_SetRenderDrawColor(renderer.get(), 0, 0, 0, 255);
+    if (SDL_RenderClear(renderer.get()) != 0) throw std::runtime_error(SDL_GetError());
+    std::unique_ptr<TTF_Font, decltype(&TTF_CloseFont)> native_font{
+      static_cast<TTF_Font*>(api.font_open(&platform, 22, style)), &TTF_CloseFont};
+    check(native_font != nullptr, "The native renderer cannot open a styled CJK font.");
+    const int expected_style = ((style & WODEX_FONT_BOLD) ? TTF_STYLE_BOLD : TTF_STYLE_NORMAL)
+      | ((style & WODEX_FONT_ITALIC) ? TTF_STYLE_ITALIC : TTF_STYLE_NORMAL);
+    check(TTF_GetFontStyle(native_font.get()) == expected_style,
+      "The native renderer did not apply the requested SDL_ttf font style.");
+    check(api.font_ascent(native_font.get()) == TTF_FontAscent(native_font.get()),
+      "The native renderer returned the wrong styled font baseline.");
+    int expected_width = 0;
+    int expected_height = 0;
+    if (TTF_SizeUTF8(native_font.get(), styled, &expected_width, &expected_height) != 0) {
+      throw std::runtime_error(TTF_GetError());
+    }
+    check(wodex_canvas_styled_text_width(canvas.get(), styled, 22, style) == expected_width,
+      "Styled Rust measurements disagree with the matching native font.");
+    wodex_canvas_clip(canvas.get(), clip);
+    check(wodex_canvas_styled_text(canvas.get(), styled, clip.x, clip.y, 22, ink, style) ==
+        expected_height, "Styled Rust rendering disagrees with its measured height.");
+    wodex_canvas_unclip(canvas.get());
+    std::vector<Uint32> pixels(surface_width * surface_height);
+    if (SDL_RenderReadPixels(renderer.get(), nullptr, SDL_PIXELFORMAT_ARGB8888, pixels.data(),
+        surface_width * static_cast<int>(sizeof(Uint32))) != 0) {
+      throw std::runtime_error(SDL_GetError());
+    }
+    bool visible = false;
+    for (int y = 0; y < surface_height; ++y) {
+      for (int x = 0; x < surface_width; ++x) {
+        const bool drawn = (pixels[static_cast<std::size_t>(y * surface_width + x)] & 0x00ffffff) != 0;
+        const bool inside = x >= clip.x && x < clip.x + clip.w &&
+          y >= clip.y && y < clip.y + clip.h;
+        if (drawn && !inside) throw std::runtime_error("Styled text escaped the chat viewport clip.");
+        visible = visible || drawn;
+      }
+    }
+    check(visible, "Styled CJK text produced no visible pixels.");
+    for (const auto& previous : style_pixels) {
+      check(pixels != previous, "Different font styles incorrectly shared the same text texture.");
+    }
+    style_pixels.push_back(std::move(pixels));
+    check(wodex_canvas_text_width(canvas.get(), styled, 22) == normal_width,
+      "Opening a styled font changed the normal font's metrics.");
+  }
+  check(wodex_canvas_ok(canvas.get()), "Styled Rust rendering reported an SDL/TTF error.");
+  std::unique_ptr<TTF_Font, decltype(&TTF_CloseFont)> code_font{
+    static_cast<TTF_Font*>(api.font_open(&platform, 18, WODEX_FONT_MONOSPACE)), &TTF_CloseFont};
+  check(code_font != nullptr, "The native renderer cannot open the bundled code font.");
+  check(TTF_FontFaceIsFixedWidth(code_font.get()) != 0, "The code font is not monospaced.");
+  check(api.font_ascent(code_font.get()) == TTF_FontAscent(code_font.get()),
+    "The native renderer returned the wrong code font baseline.");
+  const int cell = wodex_canvas_styled_text_width(canvas.get(), "M", 18, WODEX_FONT_MONOSPACE);
+  for (char character = ' '; character <= '~'; ++character) {
+    const char text[]{character, '\0'};
+    check(wodex_canvas_styled_text_width(canvas.get(), text, 18, WODEX_FONT_MONOSPACE) == cell,
+      "Printable ASCII code glyphs do not share the same cell width.");
+  }
+  check(cell * 2 >= wodex_canvas_text_width(canvas.get(), "中", 18),
+    "Two code cells do not contain the bundled CJK fallback glyph.");
+  check(cell < wodex_canvas_text_width(canvas.get(), "m", 18),
+    "Code text retained the overly wide proportional-font spacing.");
+  check(wodex_canvas_styled_text(canvas.get(), "fn main() { println!(\"hello\"); }", 0, 0, 18,
+      ink, WODEX_FONT_MONOSPACE) > 0, "The bundled code font did not render ASCII source text.");
+  check(wodex_canvas_ok(canvas.get()), "Code-font rendering reported an SDL/TTF error.");
+  check(api.font_open(&platform, 22, 5) == nullptr, "The native renderer accepted an unknown font style.");
 }
 
 }  // namespace
@@ -148,6 +220,8 @@ int main(int argc, char** argv) {
     const std::string bundled_font = resource_dir + "/fonts/NotoSansCJKsc-Regular.otf";
     wodex::Platform platform{resource_dir};
     check(platform.font_path() == bundled_font, "The desktop did not select its bundled CJK font.");
+    check(platform.monospace_font_path() == resource_dir + "/fonts/SourceCodePro-Regular.otf",
+      "The desktop did not select its bundled code font.");
     check(platform.font_data() == nullptr && platform.font_size() == 0,
       "The desktop unnecessarily copied the bundled font into memory.");
     check_coverage(platform.font_path());
@@ -156,6 +230,8 @@ int main(int argc, char** argv) {
     environment.set(bundled_font);
     wodex::Platform overridden{resource_dir + "/missing"};
     check(overridden.font_path() == bundled_font, "WODEX_FONT did not override resource discovery.");
+    check(overridden.monospace_font_path() == bundled_font,
+      "A missing code asset did not fall back to the selected application font.");
     environment.set(bundled_font + ".missing");
     bool rejected = false;
     try {

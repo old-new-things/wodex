@@ -1,6 +1,6 @@
 # Binary redistribution notices
 
-This directory accompanies Wodex Switch binaries as `licenses.tar.gz`. Preserve it, `LICENSE`, `THIRD_PARTY.md`, and the Noto font notices when redistributing a binary.
+This directory accompanies Wodex Switch binaries as `licenses.tar.gz`. Preserve it, `LICENSE`, `THIRD_PARTY.md`, and the bundled font notices when redistributing a binary.
 
 The native inventory below was checked against the linked archives in the Switch link map and the installed packages in `devkitpro/devkita64:20260219`. These are library/runtime notices; the build tools themselves are not distributed in the NRO. Upstream copyright holders and their contact details are preserved as required attribution.
 
@@ -28,6 +28,8 @@ FreeType is used under the FreeType Project License. Portions of this software a
 
 The embedded Mozilla CA certificate data is covered by MPL 2.0; its full license is in `mozilla/MPL-2.0.txt`, obtained from [Mozilla's canonical license text](https://www.mozilla.org/media/MPL/2.0/index.txt). The unmodified certificate bundle and its public source references are in `romfs/cacert.pem` in Wodex's source repository.
 
-The Noto Sans CJK font's SIL Open Font License and attribution are in `romfs/fonts/OFL.txt` and `romfs/fonts/README.md`; both are embedded in the NRO and attached separately to releases.
+The Noto Sans CJK font's SIL Open Font License and attribution are in `romfs/fonts/OFL.txt` and `romfs/fonts/README.md`; both are embedded in the NRO and included separately with downloads.
+
+Source Code Pro Regular 2.042 is copyright © 2023 Adobe, with Reserved Font Name "Source", and distributed under SIL Open Font License 1.1. Its unmodified upstream license from [commit `803b7e23`](https://github.com/adobe-fonts/source-code-pro/blob/803b7e23ec97ae58b6232ea76519a76d428ba268/LICENSE.md) is in `fonts/source-code-pro-2.042/OFL.txt` and embedded as `romfs/fonts/SourceCodePro-OFL.txt`. Font provenance and checksums are recorded in `romfs/fonts/README.md`.
 
 When updating a linked library, the SDK image, Rust toolchain, or Cargo lockfile, refresh its corresponding notices and provenance before distributing the resulting binary.

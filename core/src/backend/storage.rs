@@ -197,6 +197,23 @@ impl Fs {
     Err("No font found. Set WODEX_FONT to a TrueType or OpenType font.".into())
   }
 
+  pub fn monospace_font_path(&self, resource_dir: &str) -> Result<String, String> {
+    const BUNDLED_FONT: &str = "/fonts/SourceCodePro-Regular.otf";
+    let bundled = if self.is_switch() {
+      format!("romfs:{BUNDLED_FONT}")
+    } else if !resource_dir.is_empty() {
+      format!("{resource_dir}{BUNDLED_FONT}")
+    } else {
+      String::new()
+    };
+    if !bundled.is_empty() && self.readable_font(&bundled) {
+      return Ok(bundled);
+    }
+    // Recover from missing optional code assets using the same desktop or
+    // Switch shared-font fallback as ordinary text.
+    self.font_path(resource_dir)
+  }
+
   fn readable_font(&self, path: &str) -> bool {
     if !matches!(self.stat(path, true), Ok(Some(info)) if info.is_regular()) {
       return false;
@@ -935,6 +952,16 @@ mod tests {
       fixture.fs.font_path(fixture.directory.to_str().unwrap()).unwrap(),
       bundled.to_str().unwrap()
     );
+    assert_eq!(
+      fixture.fs.monospace_font_path(fixture.directory.to_str().unwrap()).unwrap(),
+      bundled.to_str().unwrap()
+    );
+    let monospace = directory.join("SourceCodePro-Regular.otf");
+    fs::write(&monospace, b"test code font").unwrap();
+    assert_eq!(
+      fixture.fs.monospace_font_path(fixture.directory.to_str().unwrap()).unwrap(),
+      monospace.to_str().unwrap()
+    );
     let override_path = fixture.directory.join("override.otf");
     #[cfg(unix)]
     std::os::unix::fs::symlink(&bundled, &override_path).unwrap();
@@ -948,6 +975,15 @@ mod tests {
     });
     assert_eq!(
       fixture.fs.font_path(fixture.directory.to_str().unwrap()).unwrap(),
+      override_path.to_str().unwrap()
+    );
+    assert_eq!(
+      fixture.fs.monospace_font_path(fixture.directory.to_str().unwrap()).unwrap(),
+      monospace.to_str().unwrap()
+    );
+    fs::remove_file(&monospace).unwrap();
+    assert_eq!(
+      fixture.fs.monospace_font_path(fixture.directory.to_str().unwrap()).unwrap(),
       override_path.to_str().unwrap()
     );
     // Font reads intentionally follow the symlink, while saved data and NROs

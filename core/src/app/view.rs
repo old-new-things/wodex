@@ -3,6 +3,7 @@ use super::canvas::{
   PANEL,
 };
 use super::host::{UpdatePhase, UpdateStatus};
+use super::rich_text::RichTextCache;
 use crate::state::{Message, MessageStatus, Role, State, OFFICIAL_UPDATE_REPOSITORY};
 use crate::update::UpdateChannel;
 use alloc::{format, string::String, vec::Vec};
@@ -76,6 +77,7 @@ pub struct ViewState {
   pub scroll: i32,
   pub environment_key: bool,
   pub confirm_delete: bool,
+  pub rich_text: RichTextCache,
 }
 
 impl Default for ViewState {
@@ -90,6 +92,7 @@ impl Default for ViewState {
       scroll: 0,
       environment_key: false,
       confirm_delete: false,
+      rich_text: RichTextCache::default(),
     }
   }
 }
@@ -285,15 +288,47 @@ impl View<'_> {
   fn message_height(&mut self, message: &Message) -> i32 {
     let width = if message.role == Role::User { 698 } else { 856 };
     let content = message_content(message, self.state.is_streaming);
-    let mut height = 44 + self.canvas.paragraph(content, 0, 0, 21, INK, width, false) + 36;
+    let mut height =
+      44 + self.message_text(content, message.role, 0, 0, 21, INK, width, false) + 36;
     if self.ui.show_reasoning && !message.reasoning_content.is_empty() {
-      height +=
-        37 + self.canvas.paragraph(&message.reasoning_content, 0, 0, 17, MUTED, width, false);
+      height += 37
+        + self.message_text(
+          &message.reasoning_content,
+          Role::Assistant,
+          0,
+          0,
+          17,
+          MUTED,
+          width,
+          false,
+        );
     }
     if incomplete(message) {
       height += 28;
     }
     height
+  }
+
+  #[allow(clippy::too_many_arguments)]
+  fn message_text(
+    &mut self,
+    text: &str,
+    role: Role,
+    x: i32,
+    y: i32,
+    size: i32,
+    color: Color,
+    width: i32,
+    draw: bool,
+  ) -> i32 {
+    if role == Role::User {
+      return self.canvas.paragraph(text, x, y, size, color, width, draw);
+    }
+    let layout = self.ui.rich_text.prepare(self.canvas, text, size, width);
+    if draw {
+      layout.draw(self.canvas, x, y, color);
+    }
+    layout.height
   }
 
   fn messages(&mut self, messages: &[Message]) {
@@ -323,8 +358,9 @@ impl View<'_> {
         if self.ui.show_reasoning && !message.reasoning_content.is_empty() {
           self.canvas.text("THINKING", x + 20, content_y, 13, MUTED, 0);
           content_y += 25;
-          content_y += self.canvas.paragraph(
+          content_y += self.message_text(
             &message.reasoning_content,
+            Role::Assistant,
             x + 20,
             content_y,
             17,
@@ -334,8 +370,9 @@ impl View<'_> {
           );
           content_y += 12;
         }
-        self.canvas.paragraph(
+        self.message_text(
           message_content(message, self.state.is_streaming),
+          message.role,
           x + 20,
           content_y,
           21,

@@ -16,14 +16,23 @@ typedef struct WodexColor {
   uint8_t r, g, b, a;
 } WodexColor;
 
+enum WodexFontStyle {
+  WODEX_FONT_NORMAL = 0,
+  WODEX_FONT_BOLD = 1,
+  WODEX_FONT_ITALIC = 2,
+  WODEX_FONT_BOLD_ITALIC = 3,
+  WODEX_FONT_MONOSPACE = 4
+};
+
 // Platform and renderer must remain alive until the Rust canvas is destroyed.
 // Callbacks are synchronous and must not retain pointers to text or rectangles.
 typedef struct WodexRenderApi {
   void *renderer;
   const void *platform;
-  void *(*font_open)(const void *, int32_t);
+  void *(*font_open)(const void *, int32_t, uint32_t);
   void (*font_close)(void *);
   int32_t (*font_line_skip)(void *);
+  int32_t (*font_ascent)(void *);
   int32_t (*text_measure)(void *, const char *, int32_t, int32_t *);
   int32_t (*text_size)(void *, const char *, int32_t *, int32_t *);
   void *(*texture_create)(void *, void *, const char *, WodexColor, int32_t,
@@ -46,6 +55,10 @@ void wodex_canvas_free(WodexCanvas *canvas);
 int32_t wodex_canvas_paragraph(WodexCanvas *canvas, const char *value, int32_t x, int32_t y,
                                int32_t size, WodexColor color, int32_t width, bool draw);
 int32_t wodex_canvas_text_width(WodexCanvas *canvas, const char *value, int32_t size);
+int32_t wodex_canvas_styled_text(WodexCanvas *canvas, const char *value, int32_t x, int32_t y,
+                                int32_t size, WodexColor color, uint32_t style);
+int32_t wodex_canvas_styled_text_width(WodexCanvas *canvas, const char *value, int32_t size,
+                                      uint32_t style);
 void wodex_canvas_clip(WodexCanvas *canvas, WodexRect area);
 void wodex_canvas_unclip(WodexCanvas *canvas);
 bool wodex_canvas_ok(const WodexCanvas *canvas);

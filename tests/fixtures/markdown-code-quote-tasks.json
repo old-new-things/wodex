@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "settings": {
+    "api_key": "",
+    "base_url": "https://api.deepseek.com",
+    "model": "deepseek-flash",
+    "thinking": false,
+    "max_tokens": 4096,
+    "system_prompt": "You are a helpful assistant.",
+    "update_repository": "",
+    "update_channel": "version"
+  },
+  "conversations": [
+    {
+      "id": "chat-1",
+      "title": "Markdown · Blocks",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Show a small Rust example and checklist.",
+          "reasoning_content": "",
+          "status": "complete"
+        },
+        {
+          "role": "assistant",
+          "content": "> Small steps count. **先做一小步。**\n\n- [x] Write a clear question\n- [ ] Try the example\n\n```rust\nfn main() {\n  println!(\"你好，Switch!\");\n}\n```",
+          "reasoning_content": "",
+          "status": "complete"
+        }
+      ]
+    }
+  ],
+  "active_id": "chat-1",
+  "next_id": 2
+}

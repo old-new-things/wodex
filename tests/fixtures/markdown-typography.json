@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "settings": {
+    "api_key": "",
+    "base_url": "https://api.deepseek.com",
+    "model": "deepseek-flash",
+    "thinking": false,
+    "max_tokens": 4096,
+    "system_prompt": "You are a helpful assistant.",
+    "update_repository": "",
+    "update_channel": "version"
+  },
+  "conversations": [
+    {
+      "id": "chat-1",
+      "title": "Markdown · Typography",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Show readable Markdown in English and Chinese.",
+          "reasoning_content": "",
+          "status": "complete"
+        },
+        {
+          "role": "assistant",
+          "content": "## Markdown on Switch\n**Bold 中文**, *emphasis 繁體*, ~~finished~~ and `inline_code`.\n\n混合文字保持清晰：你好，世界。日本語／한국어／𠮷。\n\nEscaped punctuation: \\*literal stars\\*. [Project page](https://example.com/docs).\n\n![A green leaf / 一片绿叶](https://example.com/leaf.png)",
+          "reasoning_content": "",
+          "status": "complete"
+        }
+      ]
+    }
+  ],
+  "active_id": "chat-1",
+  "next_id": 2
+}

@@ -4,7 +4,7 @@
 
 A native DeepSeek chat client for Nintendo Switch homebrew, with a desktop build for development. Inspired by wiliwili's controller navigation and readable handheld interface.
 
-The app streams replies, saves conversations, supports thinking mode, includes a Chinese-capable font, and uses the Switch system keyboard. It also checks the Versions and Nightly channels for updates and can replace its verified Switch NRO on exit. A real ARM64 `.nro` has been cross-compiled and linked. Physical Switch testing and a live request with your own DeepSeek key are still required.
+The app streams Markdown replies, saves conversations, supports thinking mode, includes a Chinese-capable font, and uses the Switch system keyboard. It also checks the Versions and Nightly channels for updates and can replace its verified Switch NRO on exit. A real ARM64 `.nro` has been cross-compiled and linked. Physical Switch testing and a live request with your own DeepSeek key are still required.
 
 ![Desktop preview](docs/preview.png)
 
@@ -98,7 +98,15 @@ Wodex includes **Noto Sans CJK SC Regular 2.004**, an unmodified, openly license
 
 The full 16,437,364-byte font is embedded in the Switch NRO's RomFS, so Chinese replies do not depend on the console's language or a separately installed font. A UI-text-only subset would miss characters in model replies. Desktop builds copy the same font into `resources/fonts/` beside the executable, and locate it independently of the working directory.
 
+Inline and fenced code use **Source Code Pro Regular 2.042** for ASCII, with Noto Sans CJK for other characters. This unmodified 131,128-byte monospace font and its SIL Open Font License are also bundled. Wide characters occupy two code cells.
+
 SDL_ttf/FreeType reads UTF-8 text using the font's stream API; Wodex does not manually copy the full file for every point size. Text layout and visible texture caches remain bounded. If the bundled font is absent at runtime, Switch falls back to its system-language shared font and desktop falls back to a system font. This is a whole-font fallback, not a per-character fallback chain. `WODEX_FONT` overrides the desktop choice, so that font needs the glyph coverage you want.
+
+## Markdown replies
+
+Assistant replies and thinking text render headings, bold/italic/strikethrough, lists and task markers, quotes, links, inline and fenced code, and tables. Streaming replies update their formatting as text arrives. Code preserves indentation and wraps long lines; wide tables become labeled rows to fit the handheld display.
+
+The Rust renderer uses the bundled CJK font and stays `no_std`. Links show their destinations and images show alternative text; neither triggers network requests. User messages, the composer, saved history, and API requests preserve their original text. [Markdown support and limits](docs/markdown.md) includes reproducible visual fixtures. Markdown is available in current nightlies.
 
 ## Self-updates
 
@@ -123,7 +131,7 @@ cmake --build build/desktop --parallel
 ctest --test-dir build/desktop --output-on-failure
 ```
 
-The integration tests start isolated loopback mock servers. They drive the Rust application through SDL input and the Rust network backend's real curl bindings, and test fragmented UTF-8 streams, reasoning, usage, retry, HTTP errors, cancellation, queue limits, and durable storage. Update tests exercise the Rust updater's downloads, checksums, Pages source restrictions, cancellation, backup preservation and rollback failures. Rust fault-injection tests cover short/interrupted writes, failed flushes, save rotation and rollback. Font tests exercise the production Rust renderer with real Chinese and mixed-language fonts; UI smoke tests render chat and update pages. Publication tests cover artifact integrity, immutable versions, retention, archive extraction and deployment-state recovery. No tests require a real API key or spend API credits.
+The integration tests start isolated loopback mock servers. They drive the Rust application through SDL input and the Rust network backend's real curl bindings, and test fragmented UTF-8 streams, reasoning, usage, retry, HTTP errors, cancellation, queue limits, and durable storage. Update tests exercise the Rust updater's downloads, checksums, Pages source restrictions, cancellation, backup preservation and rollback failures. Rust fault-injection tests cover short/interrupted writes, failed flushes, save rotation and rollback. Markdown tests cover parsing, streaming fragments, style-aware wrapping, tables, code indentation, bounded caches and long-message fallback. Font tests exercise the production Rust renderer with real styled Chinese and mixed-language fonts; UI smoke tests render chat and update pages. Publication tests cover artifact integrity, immutable versions, retention, archive extraction and deployment-state recovery. No tests require a real API key or spend API credits.
 
 ## Source map
 

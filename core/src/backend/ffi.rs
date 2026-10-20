@@ -109,6 +109,15 @@ pub unsafe extern "C" fn wodex_storage_font_path(
     .map_or(core::ptr::null_mut(), |path| owned(&path))
 }
 #[no_mangle]
+pub unsafe extern "C" fn wodex_storage_monospace_font_path(
+  api: *const FsApi,
+  resources: *const c_char,
+  error: *mut *mut c_char,
+) -> *mut c_char {
+  checked((|| filesystem(api)?.monospace_font_path(text(resources)?))(), error)
+    .map_or(core::ptr::null_mut(), |path| owned(&path))
+}
+#[no_mangle]
 pub unsafe extern "C" fn wodex_storage_load(
   api: *const FsApi,
   path: *const c_char,

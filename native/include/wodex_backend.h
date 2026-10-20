@@ -20,6 +20,7 @@ size_t wodex_buffer_len(const WodexBuffer *buffer);
 void wodex_buffer_free(WodexBuffer *buffer);
 char *wodex_storage_data_dir(const WodexFsApi *api, char **error);
 char *wodex_storage_font_path(const WodexFsApi *api, const char *resources, char **error);
+char *wodex_storage_monospace_font_path(const WodexFsApi *api, const char *resources, char **error);
 WodexBuffer *wodex_storage_load(const WodexFsApi *api, const char *path, char **error);
 bool wodex_storage_write(const WodexFsApi *api, const char *path,
                          const uint8_t *data, size_t length, char **error);

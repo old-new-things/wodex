@@ -16,6 +16,7 @@ public:
 
   std::string data_dir() const;
   std::string font_path() const;
+  std::string monospace_font_path() const;
   void* font_data() const;
   std::size_t font_size() const;
   bool running() const;
@@ -30,6 +31,7 @@ private:
   void shutdown() noexcept;
   std::string data_dir_;
   std::string font_path_;
+  std::string monospace_font_path_;
   void* font_data_ = nullptr;
   std::size_t font_size_ = 0;
 #ifdef __SWITCH__

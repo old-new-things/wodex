@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "settings": {
+    "api_key": "",
+    "base_url": "https://api.deepseek.com",
+    "model": "deepseek-flash",
+    "thinking": false,
+    "max_tokens": 4096,
+    "system_prompt": "You are a helpful assistant.",
+    "update_repository": "",
+    "update_channel": "version"
+  },
+  "conversations": [
+    {
+      "id": "chat-1",
+      "title": "Markdown · Wide table",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Keep a wide table readable on the Switch screen.",
+          "reasoning_content": "",
+          "status": "complete"
+        },
+        {
+          "role": "assistant",
+          "content": "| Name | 语言 | Runtime | Device | Mode | Status | Note |\n| --- | --- | --- | --- | --- | --- | --- |\n| Wodex | Rust | `no_std` | Switch | Local view | **Ready** | 中文也能阅读 |\n\nEvery column remains available.",
+          "reasoning_content": "",
+          "status": "complete"
+        }
+      ]
+    }
+  ],
+  "active_id": "chat-1",
+  "next_id": 2
+}

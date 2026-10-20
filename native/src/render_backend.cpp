@@ -8,15 +8,29 @@
 
 namespace {
 
-void *font_open(const void *context, int32_t size) {
+void *font_open(const void *context, int32_t size, uint32_t style) {
+  if (style > WODEX_FONT_MONOSPACE) {
+    SDL_SetError("Unsupported font style.");
+    return nullptr;
+  }
   try {
     const auto &platform = *static_cast<const wodex::Platform *>(context);
-    if (platform.font_data() && platform.font_size()) {
+    const auto path = style == WODEX_FONT_MONOSPACE
+      ? platform.monospace_font_path() : platform.font_path();
+    TTF_Font *font = nullptr;
+    if (path.empty() && platform.font_data() && platform.font_size()) {
       auto *stream = SDL_RWFromConstMem(platform.font_data(), static_cast<int>(platform.font_size()));
       if (!stream) return nullptr;
-      return TTF_OpenFontRW(stream, 1, size);
+      font = TTF_OpenFontRW(stream, 1, size);
+    } else {
+      font = TTF_OpenFont(path.c_str(), size);
     }
-    return TTF_OpenFont(platform.font_path().c_str(), size);
+    if (font) {
+      const int native_style = ((style & WODEX_FONT_BOLD) ? TTF_STYLE_BOLD : TTF_STYLE_NORMAL)
+        | ((style & WODEX_FONT_ITALIC) ? TTF_STYLE_ITALIC : TTF_STYLE_NORMAL);
+      TTF_SetFontStyle(font, native_style);
+    }
+    return font;
   } catch (const std::exception &error) {
     SDL_SetError("Cannot open font: %s", error.what());
     return nullptr;
@@ -28,6 +42,7 @@ void *font_open(const void *context, int32_t size) {
 
 void font_close(void *font) { TTF_CloseFont(static_cast<TTF_Font *>(font)); }
 int32_t font_line_skip(void *font) { return TTF_FontLineSkip(static_cast<TTF_Font *>(font)); }
+int32_t font_ascent(void *font) { return TTF_FontAscent(static_cast<TTF_Font *>(font)); }
 
 int32_t text_measure(void *font, const char *value, int32_t width, int32_t *count) {
   int extent = 0;
@@ -94,7 +109,7 @@ const char *render_error() { return SDL_GetError(); }
 } // namespace
 
 extern "C" WodexRenderApi wodex_render_api(void *renderer, const void *platform) {
-  return {renderer, platform, font_open, font_close, font_line_skip, text_measure, text_size,
+  return {renderer, platform, font_open, font_close, font_line_skip, font_ascent, text_measure, text_size,
           texture_create, texture_destroy, fill_rect, outline_rect, draw_line, copy_texture,
           set_clip, render_error};
 }

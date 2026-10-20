@@ -44,7 +44,9 @@ SOURCES := $(addprefix $(PROJECT_ROOT)/native/src/,main.cpp host.cpp render_back
 OFILES := $(patsubst $(PROJECT_ROOT)/native/src/%.cpp,$(BUILD_DIR)/%.o,$(SOURCES))
 REQUIRED_ROMFS_FILES := $(PROJECT_ROOT)/romfs/cacert.pem \
   $(PROJECT_ROOT)/romfs/fonts/NotoSansCJKsc-Regular.otf \
-  $(PROJECT_ROOT)/romfs/fonts/OFL.txt
+  $(PROJECT_ROOT)/romfs/fonts/OFL.txt \
+  $(PROJECT_ROOT)/romfs/fonts/SourceCodePro-Regular.otf \
+  $(PROJECT_ROOT)/romfs/fonts/SourceCodePro-OFL.txt
 # Files track content edits; directories also track nested additions/removals.
 ROMFS_INPUTS := $(shell find "$(PROJECT_ROOT)/romfs" -print)
 $(foreach resource,$(REQUIRED_ROMFS_FILES),$(if $(wildcard $(resource)),,$(error Missing required RomFS resource: $(resource))))

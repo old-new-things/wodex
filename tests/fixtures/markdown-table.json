@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "settings": {
+    "api_key": "",
+    "base_url": "https://api.deepseek.com",
+    "model": "deepseek-flash",
+    "thinking": false,
+    "max_tokens": 4096,
+    "system_prompt": "You are a helpful assistant.",
+    "update_repository": "",
+    "update_channel": "version"
+  },
+  "conversations": [
+    {
+      "id": "chat-1",
+      "title": "Markdown · Table",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Compare two approaches in a table.",
+          "reasoning_content": "",
+          "status": "complete"
+        },
+        {
+          "role": "assistant",
+          "content": "### Small comparison\n\n| Approach | 状态 | Count |\n| :--- | :---: | ---: |\n| **Local** `no_std` | 已完成 | 2 |\n| Network | 待验证 | 12 |\n\nTable text wraps within the message.",
+          "reasoning_content": "",
+          "status": "complete"
+        }
+      ]
+    }
+  ],
+  "active_id": "chat-1",
+  "next_id": 2
+}

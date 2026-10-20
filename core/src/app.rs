@@ -3,6 +3,8 @@
 pub(crate) mod canvas;
 mod editor;
 pub(crate) mod host;
+mod markdown;
+mod rich_text;
 mod view;
 
 use crate::state::{Command, SettingsPatch, WodexCore, OFFICIAL_UPDATE_REPOSITORY};

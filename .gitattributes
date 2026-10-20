@@ -1,3 +1,4 @@
 external/** -whitespace
 licenses/** -whitespace -text
 romfs/fonts/*.otf binary
+romfs/fonts/SourceCodePro-OFL.txt -whitespace -text

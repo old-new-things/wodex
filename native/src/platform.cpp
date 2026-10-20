@@ -31,6 +31,15 @@ Platform::Platform(const std::string& resource_dir) {
       throw std::runtime_error(font_error ? font_error.get() : "Cannot select application font.");
     }
     font_path_ = selected_font.get();
+    raw_error = nullptr;
+    RustString code_font{
+      wodex_storage_monospace_font_path(&filesystem, resource_dir.c_str(), &raw_error),
+      &wodex_string_free};
+    RustString code_font_error{raw_error, &wodex_string_free};
+    if (!code_font) {
+      throw std::runtime_error(code_font_error ? code_font_error.get() : "Cannot select code font.");
+    }
+    monospace_font_path_ = code_font.get();
 #ifdef __SWITCH__
     if (font_path_.empty()) {
       if (R_FAILED(plInitialize(PlServiceType_User))) throw std::runtime_error("Cannot initialize Switch fonts.");
@@ -87,6 +96,7 @@ void Platform::shutdown() noexcept {
 
 std::string Platform::data_dir() const { return data_dir_; }
 std::string Platform::font_path() const { return font_path_; }
+std::string Platform::monospace_font_path() const { return monospace_font_path_; }
 void* Platform::font_data() const { return font_data_; }
 std::size_t Platform::font_size() const { return font_size_; }
 

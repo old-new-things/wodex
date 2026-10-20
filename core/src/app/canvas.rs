@@ -7,6 +7,31 @@ use core::ffi::{c_char, c_void, CStr};
 use core::ops::Range;
 
 const CACHE_BYTES: usize = 16 * 1024 * 1024;
+const FONT_CACHE_LIMIT: usize = 32;
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum FontStyle {
+  #[default]
+  Normal = 0,
+  Bold = 1,
+  Italic = 2,
+  BoldItalic = 3,
+  Monospace = 4,
+}
+
+impl FontStyle {
+  fn from_bits(value: u32) -> Option<Self> {
+    match value {
+      0 => Some(Self::Normal),
+      1 => Some(Self::Bold),
+      2 => Some(Self::Italic),
+      3 => Some(Self::BoldItalic),
+      4 => Some(Self::Monospace),
+      _ => None,
+    }
+  }
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -52,9 +77,10 @@ pub const DANGER: Color = Color::rgb(255, 167, 158);
 pub struct RenderApi {
   pub renderer: *mut c_void,
   pub platform: *const c_void,
-  pub font_open: unsafe extern "C" fn(*const c_void, i32) -> *mut c_void,
+  pub font_open: unsafe extern "C" fn(*const c_void, i32, u32) -> *mut c_void,
   pub font_close: unsafe extern "C" fn(*mut c_void),
   pub font_line_skip: unsafe extern "C" fn(*mut c_void) -> i32,
+  pub font_ascent: unsafe extern "C" fn(*mut c_void) -> i32,
   pub text_measure: unsafe extern "C" fn(*mut c_void, *const c_char, i32, *mut i32) -> i32,
   pub text_size: unsafe extern "C" fn(*mut c_void, *const c_char, *mut i32, *mut i32) -> i32,
   pub texture_create: unsafe extern "C" fn(
@@ -78,6 +104,8 @@ pub struct RenderApi {
 struct Font {
   handle: *mut c_void,
   close: unsafe extern "C" fn(*mut c_void),
+  used: u64,
+  monospace_cell: Option<i32>,
 }
 
 impl Drop for Font {
@@ -104,6 +132,7 @@ impl Drop for Texture {
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
 struct TextureKey {
   size: i32,
+  style: FontStyle,
   width: i32,
   color: Color,
   text: String,
@@ -137,12 +166,13 @@ impl Layout {
 /// Rust owns font/texture lifetimes, bounded caches, UTF-8 layout, and drawing policy.
 pub struct Canvas {
   api: RenderApi,
-  // Textures are released before fonts, including when construction fails.
+  // Canvas drop releases textures before the remaining cached font handles.
   textures: BTreeMap<TextureKey, Texture>,
-  fonts: BTreeMap<i32, Font>,
+  fonts: BTreeMap<(i32, FontStyle), Font>,
   layouts: BTreeMap<LayoutKey, Layout>,
   texture_bytes: usize,
   texture_clock: u64,
+  font_clock: u64,
   layout_bytes: usize,
   clip: Rect,
   error: Option<String>,
@@ -160,11 +190,12 @@ impl Canvas {
       layouts: BTreeMap::new(),
       texture_bytes: 0,
       texture_clock: 0,
+      font_clock: 0,
       layout_bytes: 0,
       clip: Rect { x: 0, y: 0, w: 1280, h: 720 },
       error: None,
     };
-    result.font(20)?;
+    result.font(20, FontStyle::Normal)?;
     Ok(result)
   }
 
@@ -197,25 +228,36 @@ impl Canvas {
     }
   }
 
-  fn font(&mut self, size: i32) -> Result<*mut c_void, String> {
-    if let Some(font) = self.fonts.get(&size) {
+  fn font(&mut self, size: i32, style: FontStyle) -> Result<*mut c_void, String> {
+    self.font_clock = self.font_clock.saturating_add(1);
+    if let Some(font) = self.fonts.get_mut(&(size, style)) {
+      font.used = self.font_clock;
       return Ok(font.handle);
     }
     if !(1..=512).contains(&size) {
       return Err("Font size must be between 1 and 512 points.".to_string());
     }
-    let handle = unsafe { (self.api.font_open)(self.api.platform, size) };
+    let handle = unsafe { (self.api.font_open)(self.api.platform, size, style as u32) };
     if handle.is_null() {
       return Err(self.native_error("Cannot load font"));
     }
-    self.fonts.insert(size, Font { handle, close: self.api.font_close });
+    if self.fonts.len() >= FONT_CACHE_LIMIT {
+      let oldest = self.fonts.iter().min_by_key(|(_, font)| font.used).map(|(key, _)| *key);
+      if let Some(oldest) = oldest {
+        self.fonts.remove(&oldest);
+      }
+    }
+    self.fonts.insert(
+      (size, style),
+      Font { handle, close: self.api.font_close, used: self.font_clock, monospace_cell: None },
+    );
     Ok(handle)
   }
 
   fn texture(&mut self, key: &TextureKey) -> Result<Texture, String> {
     let value = CString::new(key.text.as_str())
       .map_err(|_| "Text contains an unsupported NUL character.".to_string())?;
-    let font = self.font(key.size)?;
+    let font = self.font(key.size, key.style)?;
     let (mut width, mut height) = (0, 0);
     let handle = unsafe {
       (self.api.texture_create)(
@@ -246,11 +288,25 @@ impl Canvas {
   }
 
   pub fn text(&mut self, value: &str, x: i32, y: i32, size: i32, color: Color, width: i32) -> i32 {
+    self.styled_text(value, x, y, size, color, width, FontStyle::Normal)
+  }
+
+  #[allow(clippy::too_many_arguments)]
+  pub fn styled_text(
+    &mut self,
+    value: &str,
+    x: i32,
+    y: i32,
+    size: i32,
+    color: Color,
+    width: i32,
+    style: FontStyle,
+  ) -> i32 {
     if value.is_empty() {
       return size.saturating_add(6);
     }
     self.texture_clock = self.texture_clock.saturating_add(1);
-    let key = TextureKey { size, width, color, text: value.to_string() };
+    let key = TextureKey { size, style, width, color, text: value.to_string() };
     let mut entry = if let Some(mut entry) = self.textures.remove(&key) {
       self.texture_bytes -= entry.bytes;
       entry.used = self.texture_clock;
@@ -274,6 +330,7 @@ impl Canvas {
         let oldest =
           self.textures.iter().min_by_key(|(_, texture)| texture.used).map(|(key, _)| TextureKey {
             size: key.size,
+            style: key.style,
             width: key.width,
             color: key.color,
             text: key.text.clone(),
@@ -291,7 +348,7 @@ impl Canvas {
   }
 
   fn build_layout(&mut self, key: &LayoutKey) -> Result<Layout, String> {
-    let font = self.font(key.size)?;
+    let font = self.font(key.size, FontStyle::Normal)?;
     let line_height = unsafe { (self.api.font_line_skip)(font) }.saturating_add(4).max(1);
     let mut result = Layout { lines: Vec::new(), line_height };
     let mut offset = 0;
@@ -463,6 +520,10 @@ impl Canvas {
     self.checked(status, "Cannot clip drawing");
   }
 
+  pub fn clip_area(&self) -> Rect {
+    self.clip
+  }
+
   pub fn unclip(&mut self) {
     self.clip = Rect { x: 0, y: 0, w: 1280, h: 720 };
     let status = unsafe { (self.api.set_clip)(self.api.renderer, core::ptr::null()) };
@@ -470,8 +531,12 @@ impl Canvas {
   }
 
   pub fn text_width(&mut self, value: &str, size: i32) -> i32 {
+    self.styled_text_width(value, size, FontStyle::Normal)
+  }
+
+  pub fn styled_text_width(&mut self, value: &str, size: i32, style: FontStyle) -> i32 {
     let result = (|| {
-      let font = self.font(size)?;
+      let font = self.font(size, style)?;
       let text = CString::new(value)
         .map_err(|_| "Text contains an unsupported NUL character.".to_string())?;
       let (mut width, mut height) = (0, 0);
@@ -485,6 +550,95 @@ impl Canvas {
       Err(error) => {
         self.record(error);
         0
+      }
+    }
+  }
+
+  pub fn line_height(&mut self, size: i32, style: FontStyle) -> i32 {
+    match self.font(size, style) {
+      Ok(font) => unsafe { (self.api.font_line_skip)(font) }.saturating_add(4).max(1),
+      Err(error) => {
+        self.record(error);
+        size.saturating_add(6).max(1)
+      }
+    }
+  }
+
+  pub fn font_ascent(&mut self, size: i32, style: FontStyle) -> i32 {
+    match self.font(size, style) {
+      Ok(font) => unsafe { (self.api.font_ascent)(font) }.max(1),
+      Err(error) => {
+        self.record(error);
+        size.max(1)
+      }
+    }
+  }
+
+  /// Fixed code cells contain every printable ASCII glyph and reserve two
+  /// cells for CJK. Measurements follow the selected bundled or override font.
+  pub fn monospace_cell_width(&mut self, size: i32) -> i32 {
+    let result = (|| {
+      let handle = self.font(size, FontStyle::Monospace)?;
+      let key = (size, FontStyle::Monospace);
+      if let Some(cell) = self.fonts.get(&key).and_then(|font| font.monospace_cell) {
+        return Ok(cell);
+      }
+      let mut cell = 1;
+      for byte in b' '..=b'~' {
+        let text = [byte, 0];
+        let (mut width, mut height) = (0, 0);
+        if unsafe { (self.api.text_size)(handle, text.as_ptr().cast(), &mut width, &mut height) }
+          != 0
+        {
+          return Err(self.native_error("Cannot measure code font"));
+        }
+        cell = cell.max(width);
+      }
+      let cjk = self.font(size, FontStyle::Normal)?;
+      let (mut width, mut height) = (0, 0);
+      if unsafe { (self.api.text_size)(cjk, c"中".as_ptr(), &mut width, &mut height) } != 0 {
+        return Err(self.native_error("Cannot measure code font"));
+      }
+      cell = cell.max(width.saturating_add(1) / 2);
+      if let Some(font) = self.fonts.get_mut(&key) {
+        font.monospace_cell = Some(cell);
+      }
+      Ok(cell)
+    })();
+    match result {
+      Ok(cell) => cell,
+      Err(error) => {
+        self.record(error);
+        size.max(1)
+      }
+    }
+  }
+
+  /// Returns a UTF-8 byte boundary fitting the width, measuring at most 512
+  /// bytes at a time. A nonempty input always advances by at least one scalar,
+  /// even when a single glyph is wider than the available space.
+  pub fn measure_prefix(&mut self, value: &str, size: i32, style: FontStyle, width: i32) -> usize {
+    let Some(first) = value.chars().next() else { return 0 };
+    let result = (|| {
+      let font = self.font(size, style)?;
+      let mut end = value.len().min(512);
+      while !value.is_char_boundary(end) {
+        end -= 1;
+      }
+      let candidate = &value[..end];
+      let text = CString::new(candidate)
+        .map_err(|_| "Text contains an unsupported NUL character.".to_string())?;
+      let mut count = 0;
+      if unsafe { (self.api.text_measure)(font, text.as_ptr(), width.max(1), &mut count) } != 0 {
+        return Err(self.native_error("Cannot measure text"));
+      }
+      Ok(candidate.char_indices().nth(count.max(1) as usize).map_or(end, |(index, _)| index))
+    })();
+    match result {
+      Ok(length) => length,
+      Err(error) => {
+        self.record(error);
+        first.len_utf8()
       }
     }
   }
@@ -530,23 +684,28 @@ pub(crate) mod test_backend {
     lines: Vec<Rect>,
     measured: Vec<String>,
     pub drawn_text: Vec<String>,
+    pub copied_rects: Vec<Rect>,
     fail_measure: bool,
     texture_bytes: usize,
+    wide_ascii: bool,
+    wide_cjk: bool,
+    size_calls: usize,
   }
 
   struct FakeFont {
     backend: *mut Backend,
     size: i32,
+    style: u32,
   }
 
   struct FakeTexture {
     backend: *mut Backend,
   }
 
-  unsafe extern "C" fn open(context: *const c_void, size: i32) -> *mut c_void {
+  unsafe extern "C" fn open(context: *const c_void, size: i32, style: u32) -> *mut c_void {
     let backend = context as *mut Backend;
     (*backend).fonts_opened += 1;
-    Box::into_raw(Box::new(FakeFont { backend, size })).cast()
+    Box::into_raw(Box::new(FakeFont { backend, size, style })).cast()
   }
 
   unsafe extern "C" fn close(font: *mut c_void) {
@@ -556,6 +715,11 @@ pub(crate) mod test_backend {
 
   unsafe extern "C" fn skip(font: *mut c_void) -> i32 {
     (*font.cast::<FakeFont>()).size + 2
+  }
+
+  unsafe extern "C" fn ascent(font: *mut c_void) -> i32 {
+    let font = &*font.cast::<FakeFont>();
+    (font.size - if font.style == FontStyle::Monospace as u32 { 4 } else { 0 }).max(1)
   }
 
   unsafe extern "C" fn measure(
@@ -571,17 +735,38 @@ pub(crate) mod test_backend {
     if backend.fail_measure {
       return -1;
     }
-    *count = (text.chars().count() as i32).min(width / 10);
+    *count = (text.chars().count() as i32).min(width / (10 + font.style as i32));
     0
   }
 
   unsafe extern "C" fn size(
-    _font: *mut c_void,
+    font: *mut c_void,
     value: *const c_char,
     width: *mut i32,
     height: *mut i32,
   ) -> i32 {
-    *width = CStr::from_ptr(value).to_str().unwrap().chars().count() as i32 * 10;
+    let font = &*font.cast::<FakeFont>();
+    let backend = &mut *font.backend;
+    backend.size_calls += 1;
+    let advance = 10 + font.style as i32;
+    *width = CStr::from_ptr(value)
+      .to_str()
+      .unwrap()
+      .chars()
+      .map(|character| {
+        if backend.wide_ascii {
+          match character {
+            'M' => 10,
+            'm' => 13,
+            '@' => 14,
+            '中' if backend.wide_cjk => 31,
+            _ => advance,
+          }
+        } else {
+          advance
+        }
+      })
+      .sum();
     *height = 20;
     0
   }
@@ -629,8 +814,10 @@ pub(crate) mod test_backend {
     0
   }
 
-  unsafe extern "C" fn copy(renderer: *mut c_void, _texture: *mut c_void, _area: Rect) -> i32 {
-    (*renderer.cast::<Backend>()).copies += 1;
+  unsafe extern "C" fn copy(renderer: *mut c_void, _texture: *mut c_void, area: Rect) -> i32 {
+    let backend = &mut *renderer.cast::<Backend>();
+    backend.copies += 1;
+    backend.copied_rects.push(area);
     0
   }
 
@@ -650,6 +837,7 @@ pub(crate) mod test_backend {
       font_open: open,
       font_close: close,
       font_line_skip: skip,
+      font_ascent: ascent,
       text_measure: measure,
       text_size: size,
       texture_create: texture,
@@ -711,6 +899,69 @@ pub(crate) mod test_backend {
     }
     assert_eq!(backend.fonts_closed, backend.fonts_opened);
     assert_eq!(backend.textures_destroyed, backend.textures_created);
+  }
+
+  #[test]
+  fn styles_use_independent_metrics_textures_and_bounded_font_handles() {
+    let mut backend = Backend::default();
+    {
+      let mut canvas = unsafe { Canvas::new(&api(&mut backend)) }.unwrap();
+      for (style, width) in [
+        (FontStyle::Normal, 20),
+        (FontStyle::Bold, 22),
+        (FontStyle::Italic, 24),
+        (FontStyle::BoldItalic, 26),
+      ] {
+        assert_eq!(FontStyle::from_bits(style as u32), Some(style));
+        assert_eq!(canvas.styled_text_width("中a", 20, style), width);
+        canvas.styled_text("中a", 0, 0, 20, INK, 0, style);
+        canvas.styled_text("中a", 0, 0, 20, INK, 0, style);
+      }
+      assert_eq!(FontStyle::from_bits(4), Some(FontStyle::Monospace));
+      assert_eq!(FontStyle::from_bits(5), None);
+      assert_eq!(backend.fonts_opened, 4);
+      assert_eq!(backend.textures_created, 4);
+      assert_eq!(canvas.text_width("中a", 20), 20);
+      for size in 30..80 {
+        canvas.styled_text_width("x", size, FontStyle::Bold);
+      }
+      assert_eq!(canvas.fonts.len(), FONT_CACHE_LIMIT);
+      assert_eq!(backend.fonts_opened - backend.fonts_closed, FONT_CACHE_LIMIT);
+      canvas.styled_text("中a", 0, 0, 20, INK, 0, FontStyle::Bold);
+      assert_eq!(backend.textures_created, 4);
+    }
+    assert_eq!(backend.fonts_closed, backend.fonts_opened);
+    assert_eq!(backend.textures_destroyed, backend.textures_created);
+  }
+
+  #[test]
+  fn styled_prefix_measurement_is_bounded_unicode_safe_and_always_advances() {
+    let (mut backend, mut canvas) = canvas();
+    assert_eq!(canvas.measure_prefix("", 20, FontStyle::Bold, 0), 0);
+    assert_eq!(canvas.measure_prefix("中𠮷a", 20, FontStyle::Bold, 1), 3);
+    assert_eq!(canvas.measure_prefix("中𠮷a", 20, FontStyle::Bold, 22), 7);
+    assert_eq!(canvas.measure_prefix("中𠮷a", 20, FontStyle::Bold, 100), 8);
+    assert_eq!(canvas.measure_prefix(&"中".repeat(300), 20, FontStyle::Normal, 9000), 510);
+    assert!(backend.measured.iter().all(|value| value.len() <= 512));
+    assert_eq!(canvas.line_height(20, FontStyle::BoldItalic), 26);
+    backend.fail_measure = true;
+    assert_eq!(canvas.measure_prefix("𠮷中", 20, FontStyle::Italic, 100), 4);
+    assert!(canvas.take_error().is_some());
+  }
+
+  #[test]
+  fn monospace_cells_contain_ascii_and_cjk_and_reuse_font_metrics() {
+    let (mut backend, mut canvas) = canvas();
+    backend.wide_ascii = true;
+    assert_eq!(canvas.monospace_cell_width(20), 14);
+    assert_eq!(backend.size_calls, 96);
+    assert_eq!(canvas.monospace_cell_width(20), 14);
+    assert_eq!(backend.size_calls, 96);
+    backend.wide_cjk = true;
+    assert_eq!(canvas.monospace_cell_width(18), 16);
+    assert_eq!(backend.size_calls, 192);
+    assert_eq!(canvas.font_ascent(20, FontStyle::Normal), 20);
+    assert_eq!(canvas.font_ascent(20, FontStyle::Monospace), 16);
   }
 
   #[test]
@@ -850,6 +1101,43 @@ mod ffi {
       Ok(text) => canvas.text_width(text, size),
       Err(_) => {
         canvas.record("Text is not valid UTF-8.".to_string());
+        0
+      }
+    }
+  }
+
+  #[no_mangle]
+  pub unsafe extern "C" fn wodex_canvas_styled_text(
+    canvas: *mut Canvas,
+    value: *const c_char,
+    x: i32,
+    y: i32,
+    size: i32,
+    color: Color,
+    style: u32,
+  ) -> i32 {
+    let (Some(canvas), false) = (canvas.as_mut(), value.is_null()) else { return 0 };
+    match (CStr::from_ptr(value).to_str(), FontStyle::from_bits(style)) {
+      (Ok(text), Some(style)) => canvas.styled_text(text, x, y, size, color, 0, style),
+      _ => {
+        canvas.record("Text or font style is invalid.".to_string());
+        0
+      }
+    }
+  }
+
+  #[no_mangle]
+  pub unsafe extern "C" fn wodex_canvas_styled_text_width(
+    canvas: *mut Canvas,
+    value: *const c_char,
+    size: i32,
+    style: u32,
+  ) -> i32 {
+    let (Some(canvas), false) = (canvas.as_mut(), value.is_null()) else { return 0 };
+    match (CStr::from_ptr(value).to_str(), FontStyle::from_bits(style)) {
+      (Ok(text), Some(style)) => canvas.styled_text_width(text, size, style),
+      _ => {
+        canvas.record("Text or font style is invalid.".to_string());
         0
       }
     }
