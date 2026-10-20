@@ -73,9 +73,11 @@ Updater::Updater(std::string version, std::string target, std::string test_base)
   checked(impl_->value != nullptr, error);
 }
 Updater::~Updater() = default;
-void Updater::check(std::string repository) {
+void Updater::check(std::string repository, UpdateChannel channel) {
   char *error = nullptr;
-  const bool success = wodex_updater_check(impl_->value.get(), repository.c_str(), &error);
+  const bool success = channel == UpdateChannel::Version
+    ? wodex_updater_check(impl_->value.get(), repository.c_str(), &error)
+    : wodex_updater_check_channel(impl_->value.get(), repository.c_str(), "nightly", &error);
   checked(success, error);
 }
 void Updater::download() {

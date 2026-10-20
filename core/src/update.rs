@@ -1,5 +1,10 @@
 use alloc::{format, string::String, vec::Vec};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+
+use crate::{
+  build_identity::{self, BuildIdentity},
+  build_metadata::{valid_commit, valid_timestamp},
+};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
@@ -9,13 +14,37 @@ pub(crate) const MAX_NRO_BYTES: u64 = 128 * 1024 * 1024;
 const NRO_HEADER_BYTES: u64 = 0x80;
 const ASSET_HEADER_BYTES: u64 = 0x38;
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum UpdateChannel {
+  #[default]
+  Version,
+  Nightly,
+}
+
+impl UpdateChannel {
+  pub fn label(self) -> &'static str {
+    match self {
+      Self::Version => "Versions",
+      Self::Nightly => "Nightly",
+    }
+  }
+
+  pub(crate) fn feed_name(self) -> &'static str {
+    match self {
+      Self::Version => "stable.json",
+      Self::Nightly => "nightly.json",
+    }
+  }
+}
+
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct UpdateFeed {
+#[serde(deny_unknown_fields, bound(deserialize = "T: Deserialize<'de>"))]
+struct UpdateFeed<T> {
   schema_version: u32,
-  channel: String,
+  channel: UpdateChannel,
   #[serde(deserialize_with = "Option::deserialize")]
-  build: Option<PublishedBuild>,
+  build: Option<T>,
 }
 
 #[derive(Deserialize)]
@@ -26,6 +55,24 @@ struct PublishedBuild {
   size: u64,
   sha256: String,
   notes: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NightlyBuild {
+  version: String,
+  url: String,
+  size: u64,
+  sha256: String,
+  notes: String,
+  id: String,
+  timestamp: String,
+  commit: String,
+}
+
+struct Candidate {
+  build: PublishedBuild,
+  nightly: Option<(String, String)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -86,28 +133,78 @@ pub(crate) fn pages_base(repository: &str) -> Option<String> {
 }
 
 pub(crate) fn inspect(feed_json: &str, current_version: &str, repository: &str) -> Value {
-  match inspect_feed(feed_json, current_version, repository) {
+  inspect_channel(
+    feed_json,
+    current_version,
+    repository,
+    UpdateChannel::Version,
+    BuildIdentity { channel: None, timestamp: "", commit: "" },
+  )
+}
+
+pub(crate) fn inspect_channel(
+  feed_json: &str,
+  current_version: &str,
+  repository: &str,
+  channel: UpdateChannel,
+  installed: BuildIdentity<'_>,
+) -> Value {
+  match inspect_feed(feed_json, current_version, repository, channel, installed) {
     Ok(value) => value,
     Err(error) => json!({"ok":false,"available":false,"error":error}),
   }
+}
+
+fn parse_feed<T: for<'de> Deserialize<'de>>(
+  feed_json: &str,
+  channel: UpdateChannel,
+) -> Result<Option<T>, &'static str> {
+  let feed: UpdateFeed<T> = serde_json::from_str(feed_json)
+    .map_err(|_| "The update source returned invalid build metadata.")?;
+  if feed.schema_version != 1 || feed.channel != channel {
+    return Err("The update source did not return the selected channel's supported feed.");
+  }
+  Ok(feed.build)
 }
 
 fn inspect_feed(
   feed_json: &str,
   current_version: &str,
   repository: &str,
+  channel: UpdateChannel,
+  installed: BuildIdentity<'_>,
 ) -> Result<Value, &'static str> {
   if feed_json.len() > MAX_UPDATE_BYTES {
     return Err("The update metadata exceeds the 1 MiB limit.");
   }
   let base = pages_base(repository).ok_or("The configured update repository is invalid.")?;
   let current = Version::parse(current_version).ok_or("The installed version is invalid.")?;
-  let feed: UpdateFeed = serde_json::from_str(feed_json)
-    .map_err(|_| "The update source returned invalid version metadata.")?;
-  if feed.schema_version != 1 || feed.channel != "version" {
-    return Err("The update source did not return a supported version feed.");
-  }
-  let Some(build) = feed.build else {
+  let candidate = match channel {
+    UpdateChannel::Version => parse_feed::<PublishedBuild>(feed_json, channel)?
+      .map(|build| Candidate { build, nightly: None }),
+    UpdateChannel::Nightly => match parse_feed::<NightlyBuild>(feed_json, channel)? {
+      Some(nightly) => {
+        if !valid_timestamp(&nightly.timestamp)
+          || !valid_commit(&nightly.commit)
+          || nightly.id != build_identity::nightly_id(&nightly.timestamp, &nightly.commit)
+        {
+          return Err("The published nightly build identity is invalid.");
+        }
+        Some(Candidate {
+          build: PublishedBuild {
+            version: nightly.version,
+            url: nightly.url,
+            size: nightly.size,
+            sha256: nightly.sha256,
+            notes: nightly.notes,
+          },
+          nightly: Some((nightly.id, nightly.timestamp)),
+        })
+      }
+      None => None,
+    },
+  };
+  let Some(Candidate { build, nightly }) = candidate else {
     return Ok(json!({"ok":true,"available":false}));
   };
   let version = Version::parse(&build.version)
@@ -116,16 +213,39 @@ fn inspect_feed(
   if !(NRO_HEADER_BYTES..=MAX_NRO_BYTES).contains(&build.size) {
     return Err("The published update size is invalid.");
   }
-  let expected_url = format!("{base}/builds/version/{}/wodex.nro", build.version);
+  let path = match &nightly {
+    Some((id, _)) => format!("nightly/{id}"),
+    None => format!("version/{}", build.version),
+  };
+  let expected_url = format!("{base}/builds/{path}/wodex.nro");
   if build.url != expected_url {
-    return Err("The update must use the configured project's exact GitHub Pages version URL.");
+    return Err("The update must use the configured project's exact GitHub Pages build URL.");
   }
   if build.sha256.len() != 64 || !build.sha256.bytes().all(|byte| byte.is_ascii_hexdigit()) {
     return Err("The published update is missing a valid SHA-256 digest.");
   }
-  if version <= current {
+  // A channel change may finish a nightly's version, but must not downgrade it.
+  // Timestamp comparisons also prevent an installed version from offering an
+  // older nightly of that same version. Development builds have no such clock.
+  let available = version >= current
+    && match &nightly {
+      Some((id, timestamp)) => {
+        version > current
+          || installed.timestamp.is_empty()
+          || timestamp.as_str() > installed.timestamp
+          || (installed.channel == Some(UpdateChannel::Nightly)
+            && timestamp.as_str() == installed.timestamp
+            && *id > build_identity::nightly_id(installed.timestamp, installed.commit))
+      }
+      None => version > current || installed.channel == Some(UpdateChannel::Nightly),
+    };
+  if !available {
     return Ok(json!({"ok":true,"available":false}));
   }
+  let label = match &nightly {
+    Some((id, _)) => format!("{} nightly {id}", build.version),
+    None => version.normalized(),
+  };
   let notes: String = build
     .notes
     .chars()
@@ -133,7 +253,7 @@ fn inspect_feed(
     .take(4096)
     .collect();
   Ok(json!({"ok":true,"available":true,"build":{
-    "version":version.normalized(),"download_url":build.url,
+    "version":version.normalized(),"label":label,"download_url":build.url,
     "size":build.size,"sha256":build.sha256.to_ascii_lowercase(),"notes":notes
   }}))
 }
@@ -433,6 +553,194 @@ mod tests {
     let response = inspect_value(&metadata, "0.1.0");
     assert_eq!(response["build"]["notes"].as_str().unwrap().chars().count(), 4096);
     assert!(!response["build"]["notes"].as_str().unwrap().contains('\u{0001}'));
+  }
+
+  fn nightly_feed(version: &str, timestamp: &str) -> Value {
+    let commit = "abcdef0123456789abcdef0123456789abcdef01";
+    let id = build_identity::nightly_id(timestamp, commit);
+    let mut value = feed(version);
+    value["channel"] = json!("nightly");
+    value["build"]["id"] = json!(id);
+    value["build"]["timestamp"] = json!(timestamp);
+    value["build"]["commit"] = json!(commit);
+    value["build"]["url"] =
+      json!(format!("https://example.github.io/wodex/builds/nightly/{id}/wodex.nro"));
+    value
+  }
+
+  fn inspect_nightly(value: &Value, version: &str, identity: BuildIdentity<'_>) -> Value {
+    inspect_channel(&value.to_string(), version, "example/wodex", UpdateChannel::Nightly, identity)
+  }
+
+  #[test]
+  fn nightly_updates_compare_build_times_even_with_the_same_version() {
+    let installed = BuildIdentity {
+      channel: Some(UpdateChannel::Nightly),
+      timestamp: "2026-10-20T01:02:03Z",
+      commit: "abcdef0123456789abcdef0123456789abcdef01",
+    };
+    for timestamp in ["2026-10-20T01:02:02Z", "2026-10-20T01:02:03Z", "2026-10-19T23:59:59Z"] {
+      assert_eq!(
+        inspect_nightly(&nightly_feed("0.3.0", timestamp), "0.3.0", installed),
+        json!({"ok":true,"available":false})
+      );
+    }
+    let next = nightly_feed("0.3.0", "2026-10-20T01:02:04Z");
+    let response = inspect_nightly(&next, "0.3.0", installed);
+    assert_eq!(response["available"], true);
+    assert_eq!(response["build"]["label"], "0.3.0 nightly 20261020T010204Z-abcdef0");
+    assert_eq!(response["build"]["version"], "0.3.0");
+    let updated = BuildIdentity { timestamp: "2026-10-20T01:02:04Z", ..installed };
+    assert_eq!(inspect_nightly(&next, "0.3.0", updated)["available"], false);
+    assert_eq!(inspect_nightly(&next, "0.4.0", installed)["available"], false);
+    assert_eq!(inspect_nightly(&next, "0.3.0", BuildIdentity::development())["available"], true);
+    let stable = BuildIdentity { channel: Some(UpdateChannel::Version), ..updated };
+    assert_eq!(inspect_nightly(&next, "0.3.0", stable)["available"], false);
+  }
+
+  #[test]
+  fn equal_time_nightlies_use_the_publishers_build_id_tie_break() {
+    let installed = BuildIdentity {
+      channel: Some(UpdateChannel::Nightly),
+      timestamp: "2026-10-20T01:02:03Z",
+      commit: "abcdef0123456789abcdef0123456789abcdef01",
+    };
+    for (commit, available) in [
+      ("a0cdef0123456789abcdef0123456789abcdef01", false),
+      (installed.commit, false),
+      ("bbcdef0123456789abcdef0123456789abcdef01", true),
+    ] {
+      let mut candidate = nightly_feed("0.3.0", installed.timestamp);
+      let id = build_identity::nightly_id(installed.timestamp, commit);
+      candidate["build"]["id"] = json!(id);
+      candidate["build"]["commit"] = json!(commit);
+      candidate["build"]["url"] =
+        json!(format!("https://example.github.io/wodex/builds/nightly/{id}/wodex.nro"));
+      assert_eq!(inspect_nightly(&candidate, "0.3.0", installed)["available"], available);
+      let stable = BuildIdentity { channel: Some(UpdateChannel::Version), ..installed };
+      assert_eq!(inspect_nightly(&candidate, "0.3.0", stable)["available"], false);
+    }
+    let older_time = nightly_feed("0.4.0", "2026-10-19T01:02:03Z");
+    assert_eq!(inspect_nightly(&older_time, "0.3.0", installed)["available"], true);
+  }
+
+  #[test]
+  fn embedded_identity_prevents_reoffering_the_installed_build() {
+    // Also run with published-build environment variables in a separate Cargo
+    // target directory to exercise the actual build script and binary identity.
+    let installed = BuildIdentity::embedded();
+    let Some(channel) = installed.channel else { return };
+    let version = env!("CARGO_PKG_VERSION");
+    let mut candidate = nightly_feed(version, installed.timestamp);
+    let id = build_identity::nightly_id(installed.timestamp, installed.commit);
+    candidate["build"]["id"] = json!(id);
+    candidate["build"]["commit"] = json!(installed.commit);
+    candidate["build"]["url"] =
+      json!(format!("https://example.github.io/wodex/builds/nightly/{id}/wodex.nro"));
+    assert_eq!(
+      inspect_nightly(&candidate, version, installed),
+      json!({"ok":true,"available":false})
+    );
+    let stable = inspect_channel(
+      &feed(version).to_string(),
+      version,
+      "example/wodex",
+      UpdateChannel::Version,
+      installed,
+    );
+    assert_eq!(stable["ok"], true);
+    assert_eq!(stable["available"], channel == UpdateChannel::Nightly);
+  }
+
+  #[test]
+  fn switching_from_nightly_can_finish_the_same_version_without_downgrading() {
+    let installed = BuildIdentity {
+      channel: Some(UpdateChannel::Nightly),
+      timestamp: "2026-10-20T01:02:03Z",
+      commit: "abcdef0123456789abcdef0123456789abcdef01",
+    };
+    for (version, available) in [("0.2.9", false), ("0.3.0", true), ("0.3.1", true)] {
+      let response = inspect_channel(
+        &feed(version).to_string(),
+        "0.3.0",
+        "example/wodex",
+        UpdateChannel::Version,
+        installed,
+      );
+      assert_eq!(response["ok"], true);
+      assert_eq!(response["available"], available);
+    }
+    let stable = BuildIdentity { channel: Some(UpdateChannel::Version), ..installed };
+    assert_eq!(
+      inspect_channel(
+        &feed("0.3.0").to_string(),
+        "0.3.0",
+        "example/wodex",
+        UpdateChannel::Version,
+        stable
+      )["available"],
+      false
+    );
+  }
+
+  #[test]
+  fn nightly_feed_identity_and_url_must_agree_and_channels_are_strict() {
+    let valid = nightly_feed("0.3.0", "2026-10-20T01:02:03Z");
+    for (field, value) in [
+      ("id", json!("20261020T010203Z-0000000")),
+      ("id", json!("../20261020T010203Z-abcdef0")),
+      ("timestamp", json!("2026-02-29T01:02:03Z")),
+      ("timestamp", json!("2026-10-20T01:02:04Z")),
+      ("commit", json!("ABCDEF0123456789abcdef0123456789abcdef01")),
+      ("commit", json!("abcdef0")),
+      ("url", json!("https://example.github.io/wodex/builds/version/0.3.0/wodex.nro")),
+      (
+        "url",
+        json!(
+          "https://example.github.io/wodex/builds/nightly/20261020T010203Z-abcdef0/wodex.nro?x=1"
+        ),
+      ),
+      (
+        "url",
+        json!("https://other.github.io/wodex/builds/nightly/20261020T010203Z-abcdef0/wodex.nro"),
+      ),
+      ("extra", json!(true)),
+    ] {
+      let mut invalid = valid.clone();
+      invalid["build"][field] = value;
+      assert_eq!(
+        inspect_nightly(&invalid, "0.1.0", BuildIdentity::development())["ok"],
+        false,
+        "{field}"
+      );
+      assert_eq!(
+        inspect_nightly(&invalid, "9.0.0", BuildIdentity::development())["ok"],
+        false,
+        "{field}"
+      );
+    }
+    for field in ["id", "timestamp", "commit"] {
+      let mut invalid = valid.clone();
+      invalid["build"].as_object_mut().unwrap().remove(field);
+      assert_eq!(
+        inspect_nightly(&invalid, "0.1.0", BuildIdentity::development())["ok"],
+        false,
+        "{field}"
+      );
+    }
+    assert_eq!(inspect_value(&valid, "0.1.0")["ok"], false);
+    assert_eq!(inspect_nightly(&feed("0.3.0"), "0.1.0", BuildIdentity::development())["ok"], false);
+    let mut wrong_channel = valid.clone();
+    wrong_channel["channel"] = json!("version");
+    assert_eq!(inspect_nightly(&wrong_channel, "0.1.0", BuildIdentity::development())["ok"], false);
+    let empty = json!({"schema_version":1,"channel":"nightly","build":null});
+    assert_eq!(
+      inspect_nightly(&empty, "0.1.0", BuildIdentity::development()),
+      json!({"ok":true,"available":false})
+    );
+    let mut missing_build = empty;
+    missing_build.as_object_mut().unwrap().remove("build");
+    assert_eq!(inspect_nightly(&missing_build, "0.1.0", BuildIdentity::development())["ok"], false);
   }
 
   #[test]

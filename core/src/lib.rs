@@ -4,6 +4,8 @@ extern crate alloc;
 
 mod app;
 mod backend;
+mod build_identity;
+mod build_metadata;
 mod ffi;
 mod state;
 mod stream;

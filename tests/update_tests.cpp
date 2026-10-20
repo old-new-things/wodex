@@ -337,6 +337,40 @@ void test_install_safety() {
   }
 }
 
+void test_nightly_channel(const std::string& base) {
+  using wodex::UpdateChannel;
+  TemporaryDirectory directory;
+  const auto original = nro(1);
+  write(directory.path(), original);
+  Updater updater{"0.3.0", directory.path(), base};
+  updater.check("fixture/nightly-good", UpdateChannel::Nightly);
+  const auto available = wait(updater);
+  check(available.phase == UpdatePhase::Available, "The optional nightly channel did not offer a same-version build.");
+  check(available.version == "0.3.0 nightly 20261020T010203Z-abcdef0", "The nightly identity was not displayed.");
+  updater.download();
+  check(wait(updater).phase == UpdatePhase::Ready && updater.pending_install().has_value(),
+    "The nightly payload did not pass verification.");
+  check(read(directory.path()) == original, "Checking or downloading nightly replaced the running executable.");
+  updater.check("fixture/nightly-good", UpdateChannel::Version);
+  check(wait(updater).phase == UpdatePhase::Current && !updater.pending_install() &&
+    !std::filesystem::exists(directory.path() + ".update.part"),
+    "Switching channels retained an obsolete staged nightly.");
+  updater.check("fixture/nightly-good", UpdateChannel::Nightly);
+  check(wait(updater).phase == UpdatePhase::Available, "A repeat nightly check failed after changing channels.");
+  Updater newer{"0.4.0", "", base};
+  newer.check("fixture/nightly-good", UpdateChannel::Nightly);
+  check(wait(newer).phase == UpdatePhase::Current, "The nightly channel offered a semantic version downgrade.");
+  Updater empty{"0.3.0", "", base};
+  empty.check("fixture/nightly-empty", UpdateChannel::Nightly);
+  check(wait(empty).phase == UpdatePhase::Current, "An empty nightly channel offered an update.");
+  for (const std::string scenario : {"nightly-bad-id", "nightly-bad-date", "nightly-missing-commit",
+    "nightly-wrong-path", "nightly-wrong-channel"}) {
+    Updater invalid{"0.3.0", "", base};
+    invalid.check("fixture/" + scenario, UpdateChannel::Nightly);
+    check(wait(invalid).phase == UpdatePhase::Error, "An invalid nightly feed was accepted.");
+  }
+}
+
 void test_real_artifact(const std::string& path) {
   TemporaryDirectory directory;
   const auto artifact = read(path);
@@ -356,6 +390,7 @@ int main(int argc, char** argv) {
     if (argc != 2 && argc != 3) throw std::runtime_error("Run this binary through tests/mock_updates.py.");
     test_download(argv[1]);
     test_check_modes(argv[1]);
+    test_nightly_channel(argv[1]);
     test_failures(argv[1]);
     test_cancel(argv[1]);
     test_paths_and_ready_reset(argv[1]);

@@ -9,6 +9,8 @@
 
 namespace wodex {
 
+enum class UpdateChannel { Version, Nightly };
+
 enum class UpdatePhase { Idle, Checking, Current, Available, Downloading, Ready, Cancelled, Error };
 
 struct UpdateStatus {
@@ -38,7 +40,7 @@ public:
   Updater(const Updater&) = delete;
   Updater& operator=(const Updater&) = delete;
 
-  void check(std::string repository);
+  void check(std::string repository, UpdateChannel channel = UpdateChannel::Version);
   void download();
   void cancel();
   bool active() const;

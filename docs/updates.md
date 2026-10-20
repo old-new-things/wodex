@@ -2,11 +2,11 @@
 
 Wodex publishes downloads through [GitHub Pages](https://old-new-things.github.io/wodex/). There are two channels: timestamped **Nightly** builds and explicitly tagged **Versions**. GitHub Releases are not created. Downloads and update checks need no GitHub token or account login.
 
-The app's update source is unset by default. Enter `old-new-things/wodex` in Settings to use this project's version feed. Automatic selection is limited to the Versions channel; download and install nightlies manually from the page.
+New installations use `old-new-things/wodex` and the **Versions** channel. Existing saved sources are preserved, including an empty source that disables checks. Choose **Use Wodex** on the Updates page to select the official source, or **Change** to enter another project's `owner/repository`. Choose **Nightly** to opt into experimental builds. The source and channel are saved; changing either invalidates a previously checked or downloaded update until another check succeeds.
 
 ## Install an update
 
-1. Open Settings → Updates and choose **Check for updates**.
+1. Open Settings → Updates, select **Versions** or **Nightly**, and choose **Check for updates**.
 2. Review the newer version, then choose **Download**.
 3. Wait for verification to complete. Choose **Install and exit** to replace the running NRO.
 4. Launch Wodex again from hbmenu. Installation exits the app; it does not restart it automatically.
@@ -29,9 +29,23 @@ The app reads `https://old-new-things.github.io/wodex/updates/stable.json` when 
 
 The size and digest above are illustrative. Publication generates the real values from the verified NRO.
 
-Wodex accepts only a newer canonical `X.Y.Z` version, a size from the minimum NRO header through 128 MiB, and a valid SHA-256 digest. The URL must match the configured project's exact HTTPS Pages path for that version. Unknown schema fields, malformed metadata, nightly feeds and redirects are rejected. The download must match both the advertised byte count and SHA-256 and pass NRO/ASET/RomFS validation before it becomes installable. The adjacent `.sha256` text file supports manual verification; the app uses the digest in the version feed.
+The Versions feed selects a newer canonical `X.Y.Z` version. When returning from Nightly, the final version with the same version number is also eligible. Older version numbers are never selected. The stable feed retains its original schema so Wodex 0.2.0 can update to a version with channel selection.
 
-Checking and downloading do not replace the application. Installing targets the actual SD-card NRO path supplied by the homebrew loader in `argv[0]`. A missing or unsupported executable path disables installation and leaves manual copying available. Desktop builds can check the version feed; self-installation is supported on Switch.
+Nightly reads `https://old-new-things.github.io/wodex/updates/nightly.json`. Its schema uses `schema_version: 1`, `channel: "nightly"` and a required `build` field, which is `null` before a nightly exists. A populated build has the same fields as the version feed, plus:
+
+```json
+{
+  "id": "20261020T001700Z-0123456",
+  "timestamp": "2026-10-20T00:17:00Z",
+  "commit": "0123456789abcdef0123456789abcdef01234567"
+}
+```
+
+The nightly URL must be `https://old-new-things.github.io/wodex/builds/nightly/<id>/wodex.nro`. The ID must match the valid UTC timestamp and the first seven characters of the full lowercase commit SHA. Published NROs embed their own channel, timestamp and commit. For the same version number, the app selects only a later nightly, so checking again after installation does not offer the same build. Nightly IDs break equal-timestamp ties in the same order as the publisher. Switching from Versions requires a strictly newer timestamp for a nightly of the same version. Local development binaries without a publication identity may opt into the latest nightly.
+
+Both feeds require a size from the minimum NRO header through 128 MiB and a valid SHA-256 digest. The URL must match the configured project's exact HTTPS Pages path for the selected channel and build. Unknown schema fields, mismatched channels, malformed metadata and redirects are rejected. Downloads must match both the advertised byte count and SHA-256 and pass NRO/ASET/RomFS validation before becoming installable. The adjacent `.sha256` file supports manual verification; the app uses the digest in the selected feed.
+
+Checking and downloading do not replace the application. Installing targets the actual SD-card NRO path supplied by the homebrew loader in `argv[0]`. A missing or unsupported executable path disables installation and leaves manual copying available. Desktop builds can check both feeds; self-installation is supported on Switch.
 
 ## Installation and recovery
 
@@ -48,6 +62,8 @@ TLS and SHA-256 protect transfer integrity relative to the selected feed. The re
 The [build workflow](https://github.com/old-new-things/wodex/actions/workflows/build.yml) runs Rust checks, all desktop integration suites, the Switch build and updater tests using the packaged NRO. It then dispatches the [publication workflow](https://github.com/old-new-things/wodex/actions/workflows/publish.yml) on `main`, passing the successful source run and attempt. Publication validates that source before downloading its artifact. The Switch build uses `devkitpro/devkita64:20260219` and Rust `nightly-2026-10-01`.
 
 Successful `main` pushes publish nightlies. A daily run at **00:17 UTC** and manual runs on `main` use the same checks and channel. Nightly paths contain the UTC workflow-attempt timestamp and abbreviated source commit, for example `builds/nightly/20261020T001700Z-0123456/`. Other branches and pull requests upload CI artifacts without changing the download site.
+
+The build identity job obtains the source workflow attempt's start time and commit from GitHub. The Switch compiler embeds them through `WODEX_BUILD_CHANNEL`, `WODEX_BUILD_TIMESTAMP`, and `WODEX_BUILD_COMMIT`. A CI-only `build-info.json` accompanies the artifact; publication requires it to match the independently validated source run and `VERSION`. All three environment variables must be supplied together for a local published-identity build; leaving them unset produces a development build.
 
 `VERSION` is the canonical application version, used by both the desktop version string and Switch NACP metadata. It must contain one `X.Y.Z` version of at most 15 ASCII characters, without leading zeroes in a component. An explicit version is published by pushing a tag containing `v` followed by that exact value. The tagged commit must already be reachable from `main`.
 
@@ -68,9 +84,11 @@ Publication is serialized so each job restores the last accepted Pages deploymen
 
 The site retains up to seven newest nightlies and ten highest versions. A 450 MiB download budget may remove additional older builds while preserving the newest build in each channel. Version digest records survive pruning.
 
-Recovery snapshots are stored as attempt-specific Actions artifacts. After deployment, the publication workflow checks the live catalog, version feed, page, and newest downloads against its generated files. It retries for up to 11 minutes to allow CDN propagation. Only successful public verification permits cleanup, which keeps the current and preceding snapshots with 90-day retention. Successful daily publications refresh this history.
+Recovery snapshots are stored as attempt-specific Actions artifacts. After deployment, the publication workflow checks the live catalog, both update feeds, page, and newest downloads against its generated files. It retries for up to 11 minutes to allow CDN propagation. Only successful public verification permits cleanup, which keeps the current and preceding snapshots with 90-day retention. Successful daily publications refresh this history.
 
 Restoration accepts only snapshots from this repository's authorized publication workflow with a successful Pages deployment step, plus a fixed allowlist of the initial migration snapshots. If later public verification fails, the accepted snapshot is still retained as publication intent: the next run preserves its version locks and downloads instead of dropping a potentially deployed version. A failed verification marks the workflow unsuccessful and leaves recovery artifacts intact.
+
+Restored snapshots keep their existing downloads, including older versions without embedded build identity. New incoming artifacts require `build-info.json`; replaying a pre-identity build is rejected. Rerun all build jobs when regenerating an artifact so its embedded identity and workflow attempt agree. Already published explicit versions remain immutable.
 
 The publication workflow always runs through `workflow_dispatch` on `main`, including for tag builds. This avoids a [reported Pages issue with repeated commit IDs on tag/release deployments](https://github.com/actions/deploy-pages/issues/383). The source commit and channel in the catalog still describe the actual tested build. A green build workflow means its tests and dispatch succeeded; check the publication workflow for the public download result.
 

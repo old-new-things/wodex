@@ -3,7 +3,8 @@ use super::canvas::{
   PANEL,
 };
 use super::host::{UpdatePhase, UpdateStatus};
-use crate::state::{Message, MessageStatus, Role, State};
+use crate::state::{Message, MessageStatus, Role, State, OFFICIAL_UPDATE_REPOSITORY};
+use crate::update::UpdateChannel;
 use alloc::{format, string::String, vec::Vec};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -41,6 +42,8 @@ pub enum Action {
   DeleteChat,
   BackToChat,
   UpdateCheck,
+  UpdateOfficial,
+  UpdateChannel(UpdateChannel),
   UpdateDownload,
   UpdateInstall,
   UpdateCancel,
@@ -418,7 +421,14 @@ impl View<'_> {
   }
 
   fn updates(&mut self, status: &UpdateStatus, version: &str, demo: bool, install_supported: bool) {
-    self.canvas.text(&format!("WODEX {version}"), 318, 30, 15, ACCENT, 0);
+    self.canvas.text(
+      &format!("WODEX {}", crate::build_identity::label(version)),
+      318,
+      30,
+      15,
+      ACCENT,
+      910,
+    );
     self.canvas.text("Updates", 312, 68, 36, INK, 0);
     self.button(
       "update-back",
@@ -429,7 +439,7 @@ impl View<'_> {
     );
     self.canvas.text("GITHUB PAGES SOURCE", 318, 128, 14, MUTED, 0);
     self.canvas.rect(rect(314, 158, 922, 62), ELEVATED, 9);
-    self.canvas.clip(rect(332, 172, 690, 34));
+    self.canvas.clip(rect(332, 172, 540, 34));
     let state = self.state;
     let repository = &state.settings.update_repository;
     self.canvas.text(
@@ -443,6 +453,15 @@ impl View<'_> {
     self.canvas.unclip();
     let active = matches!(status.phase, UpdatePhase::Checking | UpdatePhase::Downloading);
     if !active && !demo {
+      if repository != OFFICIAL_UPDATE_REPOSITORY {
+        self.button(
+          "update-official",
+          "Use Wodex",
+          rect(892, 168, 164, 42),
+          Action::UpdateOfficial,
+          false,
+        );
+      }
       self.button(
         "update-source",
         "Change",
@@ -451,57 +470,83 @@ impl View<'_> {
         false,
       );
     }
-    self.canvas.rect(rect(314, 244, 922, 244), PANEL, 12);
+    for (channel, id, area) in [
+      (UpdateChannel::Version, "update-version", rect(314, 232, 178, 42)),
+      (UpdateChannel::Nightly, "update-nightly", rect(506, 232, 170, 42)),
+    ] {
+      let selected = state.settings.update_channel == channel;
+      if !active && !demo {
+        self.button(id, channel.label(), area, Action::UpdateChannel(channel), selected);
+      } else {
+        self.canvas.rect(area, if selected { ELEVATED } else { PANEL }, 9);
+        self.canvas.text(channel.label(), area.x + 16, area.y + 9, 20, MUTED, 0);
+      }
+    }
+    self.canvas.text(
+      if state.settings.update_channel == UpdateChannel::Nightly {
+        "Nightly builds are experimental."
+      } else {
+        "Published versions. Nightly is optional."
+      },
+      698,
+      244,
+      16,
+      MUTED,
+      530,
+    );
+    self.canvas.rect(rect(314, 290, 922, 218), PANEL, 12);
     self.canvas.text(
       phase_title(status.phase),
       338,
-      266,
+      308,
       26,
       if status.phase == UpdatePhase::Error { DANGER } else { INK },
       0,
     );
     if !status.version.is_empty() {
-      self.canvas.text(&format!("Version {}", status.version), 340, 312, 18, ACCENT, 0);
+      self.canvas.clip(rect(338, 348, 870, 45));
+      self.canvas.text(&format!("Build {}", status.version), 340, 348, 18, ACCENT, 864);
+      self.canvas.unclip();
     }
     let message = if !status.message.is_empty() {
       &status.message
     } else if repository.is_empty() {
-      "Set a public repository with a Wodex GitHub Pages version feed."
+      "Choose Use Wodex, or enter a repository with compatible GitHub Pages update feeds."
     } else {
-      "Check for a new version before downloading."
+      "Check the selected channel before downloading."
     };
-    self.canvas.clip(rect(338, 344, 870, 100));
-    self.canvas.text(&preview(message, 600), 340, 344, 18, MUTED, 864);
+    self.canvas.clip(rect(338, 396, 870, 52));
+    self.canvas.text(&preview(message, 600), 340, 396, 18, MUTED, 864);
     self.canvas.unclip();
     if matches!(status.phase, UpdatePhase::Downloading | UpdatePhase::Ready) {
-      self.canvas.rect(rect(340, 438, 864, 7), BORDER, 3);
+      self.canvas.rect(rect(340, 460, 864, 7), BORDER, 3);
       let progress = if status.total == 0 {
         0
       } else {
         ((status.downloaded.min(status.total) as u128 * 864) / status.total as u128) as i32
       };
-      self.canvas.rect(rect(340, 438, progress, 7), ACCENT, 3);
+      self.canvas.rect(rect(340, 460, progress, 7), ACCENT, 3);
       self.canvas.text(
         &format!("{} / {}", size_label(status.downloaded), size_label(status.total)),
         340,
-        455,
+        480,
         15,
         MUTED,
         0,
       );
     }
     if active {
-      self.button("update-cancel", "Cancel", rect(314, 512, 210, 50), Action::UpdateCancel, false);
+      self.button("update-cancel", "Cancel", rect(314, 528, 210, 50), Action::UpdateCancel, false);
     } else if !repository.is_empty() && !demo {
       self.button(
         "update-check",
         "Check for updates",
-        rect(314, 512, 240, 50),
+        rect(314, 528, 240, 50),
         Action::UpdateCheck,
         false,
       );
     } else {
-      let area = rect(314, 512, 240, 50);
+      let area = rect(314, 528, 240, 50);
       self.canvas.rect(area, PANEL, 9);
       self.canvas.text("Check for updates", area.x + 16, area.y + 12, 20, MUTED, 0);
     }
@@ -510,14 +555,14 @@ impl View<'_> {
         UpdatePhase::Available => self.button(
           "update-download",
           "Download",
-          rect(572, 512, 224, 50),
+          rect(572, 528, 224, 50),
           Action::UpdateDownload,
           true,
         ),
         UpdatePhase::Ready => self.button(
           "update-install",
           "Install and exit",
-          rect(816, 512, 420, 50),
+          rect(816, 528, 420, 50),
           Action::UpdateInstall,
           true,
         ),
@@ -609,7 +654,7 @@ fn phase_title(phase: UpdatePhase) -> &'static str {
   match phase {
     UpdatePhase::Checking => "Checking for updates…",
     UpdatePhase::Current => "You’re up to date",
-    UpdatePhase::Available => "A new version is available",
+    UpdatePhase::Available => "A new build is available",
     UpdatePhase::Downloading => "Downloading your update…",
     UpdatePhase::Ready => "Your update is ready to install",
     UpdatePhase::Cancelled => "Update cancelled",
@@ -645,6 +690,7 @@ mod tests {
   fn update_controls_require_source_and_native_install_support() {
     let (_backend, mut canvas) = canvas();
     let mut state = WodexCore::default().state().clone();
+    state.settings.update_repository.clear();
     let mut ui = ViewState { page: Page::Updates, ..ViewState::default() };
     let buttons =
       render(&mut canvas, &state, &mut ui, &status(UpdatePhase::Idle), "0.2.0", false, true, None);
@@ -653,6 +699,13 @@ mod tests {
       .any(|button| button.action == Action::EditSetting(Setting::UpdateRepository)));
     assert!(!buttons.iter().any(|button| button.action == Action::UpdateCheck));
     assert!(!buttons.iter().any(|button| button.action == Action::UpdateInstall));
+    assert!(buttons.iter().any(|button| button.action == Action::UpdateOfficial));
+    assert!(buttons
+      .iter()
+      .any(|button| button.action == Action::UpdateChannel(UpdateChannel::Version)));
+    assert!(buttons
+      .iter()
+      .any(|button| button.action == Action::UpdateChannel(UpdateChannel::Nightly)));
 
     state.settings.update_repository = "example/wodex".into();
     let buttons = render(
@@ -695,6 +748,8 @@ mod tests {
       Action::UpdateCheck
         | Action::UpdateDownload
         | Action::UpdateInstall
+        | Action::UpdateOfficial
+        | Action::UpdateChannel(_)
         | Action::EditSetting(Setting::UpdateRepository)
     )));
     let buttons = render(
@@ -712,6 +767,8 @@ mod tests {
       Action::UpdateCheck
         | Action::UpdateDownload
         | Action::UpdateInstall
+        | Action::UpdateOfficial
+        | Action::UpdateChannel(_)
         | Action::EditSetting(Setting::UpdateRepository)
     )));
     drop(canvas);

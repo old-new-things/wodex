@@ -48,6 +48,8 @@ WodexUpdater *wodex_updater_new(const WodexBackendApi *api, const char *version,
                                const char *ca_bundle, char **error);
 void wodex_updater_free(WodexUpdater *updater);
 bool wodex_updater_check(WodexUpdater *updater, const char *repository, char **error);
+// channel must be "version" or "nightly". The legacy check selects "version".
+bool wodex_updater_check_channel(WodexUpdater *updater, const char *repository, const char *channel, char **error);
 bool wodex_updater_download(WodexUpdater *updater, char **error);
 void wodex_updater_cancel(WodexUpdater *updater);
 bool wodex_updater_active(const WodexUpdater *updater);

@@ -57,6 +57,7 @@ class Server(http.server.ThreadingHTTPServer):
     self.failures = []
     self.lock = threading.Lock()
     self.direct_downloads = 0
+    self.nightly_downloads = 0
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -83,7 +84,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
       parsed = urllib.parse.urlsplit(self.path)
       parts = parsed.path.strip("/").split("/")
       assert not parsed.query and not parsed.fragment, "Update URL contained a query or fragment"
-      if len(parts) == 4 and parts[0] == "fixture.github.io" and parts[2:] == ["updates", "stable.json"]:
+      if len(parts) == 4 and parts[0] == "fixture.github.io" and parts[2] == "updates" and parts[3] in ("stable.json", "nightly.json"):
         scenario = parts[1]
         if scenario == "http-error":
           self.reply(503, b"private-update-body")
@@ -108,6 +109,26 @@ class Handler(http.server.BaseHTTPRequestHandler):
             "sha256": sha256,
           },
         }
+        if parts[3] == "nightly.json":
+          metadata["channel"] = "nightly"
+          metadata["build"].update({
+            "id": "20261020T010203Z-abcdef0",
+            "timestamp": "2026-10-20T01:02:03Z",
+            "commit": "abcdef0123456789abcdef0123456789abcdef01",
+            "url": "https://fixture.github.io/" + scenario + "/builds/nightly/20261020T010203Z-abcdef0/wodex.nro",
+          })
+          if scenario == "nightly-empty":
+            metadata["build"] = None
+          if scenario == "nightly-bad-id":
+            metadata["build"]["id"] = "20261020T010203Z-0000000"
+          if scenario == "nightly-bad-date":
+            metadata["build"]["timestamp"] = "2026-02-29T01:02:03Z"
+          if scenario == "nightly-missing-commit":
+            del metadata["build"]["commit"]
+          if scenario == "nightly-wrong-path":
+            metadata["build"]["url"] = "https://fixture.github.io/" + scenario + "/builds/version/0.3.0/wodex.nro"
+          if scenario == "nightly-wrong-channel":
+            metadata["channel"] = "version"
         if scenario == "empty":
           metadata["build"] = None
         if scenario == "nightly-feed":
@@ -121,6 +142,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if scenario == "wrong-owner":
           metadata["build"]["url"] = "https://elsewhere.github.io/wrong-owner/builds/version/0.3.0/wodex.nro"
         self.reply(200, json.dumps(metadata, ensure_ascii=False).encode("utf-8"))
+      elif len(parts) == 6 and parts[0] == "fixture.github.io" and parts[2:] == ["builds", "nightly", "20261020T010203Z-abcdef0", "wodex.nro"]:
+        assert parts[1] == "nightly-good", "An unverified nightly was downloaded"
+        with self.server.lock:
+          self.server.nightly_downloads += 1
+        self.reply(200, asset(parts[1]), "application/octet-stream")
       elif len(parts) == 6 and parts[0] == "fixture.github.io" and parts[2:] == ["builds", "version", "0.3.0", "wodex.nro"]:
         scenario = parts[1]
         redirects = {
@@ -183,6 +209,9 @@ def main():
     return 1
   if result.returncode == 0 and server.direct_downloads != 2:
     print("The expected version artifacts were not downloaded directly from the project Pages paths.", file=sys.stderr)
+    return 1
+  if result.returncode == 0 and server.nightly_downloads != 1:
+    print("The nightly artifact was not downloaded from its exact project Pages path.", file=sys.stderr)
     return 1
   return result.returncode
 

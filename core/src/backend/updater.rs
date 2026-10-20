@@ -9,7 +9,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
   app::host::{UpdatePhase, UpdateStatus},
-  update::{self, WodexSha256},
+  build_identity::BuildIdentity,
+  update::{self, UpdateChannel, WodexSha256},
 };
 
 use super::{
@@ -32,8 +33,8 @@ pub struct PendingUpdate {
 }
 
 #[derive(Clone, Deserialize)]
-struct PublishedVersion {
-  version: String,
+struct PublishedUpdate {
+  label: String,
   download_url: String,
   size: u64,
   sha256: String,
@@ -44,7 +45,7 @@ struct PublishedVersion {
 struct State {
   status: UpdateStatus,
   pending: Option<PendingUpdate>,
-  build: Option<PublishedVersion>,
+  build: Option<PublishedUpdate>,
 }
 
 struct Worker {
@@ -109,8 +110,8 @@ impl Updater {
     Ok(())
   }
 
-  pub fn check(&mut self, repository: &str) -> Result<(), String> {
-    self.prepare(UpdatePhase::Checking, "Checking the configured GitHub Pages version feed…")?;
+  pub fn check(&mut self, repository: &str, channel: UpdateChannel) -> Result<(), String> {
+    self.prepare(UpdatePhase::Checking, "Checking the selected GitHub Pages update channel…")?;
     {
       let mut state = self.shared.state.lock();
       if let Some(pending) = state.pending.take() {
@@ -123,7 +124,7 @@ impl Updater {
     }
     let shared = self.shared.clone();
     let repository = String::from(repository);
-    match self.runtime.spawn(move || shared.inspect(&repository)) {
+    match self.runtime.spawn(move || shared.inspect(&repository, channel)) {
       Ok(worker) => self.worker = Some(worker),
       Err(_) => self.shared.finish(UpdatePhase::Error, "Cannot start the update worker."),
     }
@@ -196,35 +197,49 @@ impl Worker {
     }
   }
 
-  fn inspect(&self, repository: &str) {
-    match self.inspect_build(repository) {
+  fn inspect(&self, repository: &str, channel: UpdateChannel) {
+    match self.inspect_build(repository, channel) {
       Ok(Some(build)) => {
         {
           let mut state = self.state.lock();
-          state.status.version = build.version.clone();
+          state.status.version = build.label.clone();
           state.status.notes = build.notes.clone();
           state.status.total = build.size;
           state.build = Some(build);
         }
-        self.finish(UpdatePhase::Available, "A newer version is available to download and verify.");
+        self.finish(UpdatePhase::Available, "An update is available to download and verify.");
       }
-      Ok(None) => self.finish(UpdatePhase::Current, "No newer published version is available."),
+      Ok(None) => self.finish(UpdatePhase::Current, "No newer build is available in this channel."),
       Err(WorkError::Cancelled) => self.finish(UpdatePhase::Cancelled, "Update check cancelled."),
       Err(WorkError::Failure(error)) => self.finish(UpdatePhase::Error, &error),
     }
   }
 
-  fn inspect_build(&self, repository: &str) -> Result<Option<PublishedVersion>, WorkError> {
+  fn inspect_build(
+    &self,
+    repository: &str,
+    channel: UpdateChannel,
+  ) -> Result<Option<PublishedUpdate>, WorkError> {
     let base = update::pages_base(repository)
       .ok_or_else(|| failure("Set the update repository to owner/repository before checking."))?;
     let mut manifest = alloc::vec::Vec::new();
-    self.fetch(&format!("{base}/updates/stable.json"), MAX_UPDATE_SIZE, &mut |bytes| {
-      manifest.extend_from_slice(bytes);
-      Ok(())
-    })?;
+    self.fetch(
+      &format!("{base}/updates/{}", channel.feed_name()),
+      MAX_UPDATE_SIZE,
+      &mut |bytes| {
+        manifest.extend_from_slice(bytes);
+        Ok(())
+      },
+    )?;
     let manifest = core::str::from_utf8(&manifest)
       .map_err(|_| failure("The update source returned invalid version metadata."))?;
-    let mut result = update::inspect(manifest, &self.current_version, repository);
+    let mut result = update::inspect_channel(
+      manifest,
+      &self.current_version,
+      repository,
+      channel,
+      BuildIdentity::embedded(),
+    );
     if result["ok"].as_bool() != Some(true) {
       return Err(failure(
         result["error"].as_str().unwrap_or("The build does not contain a verified Wodex NRO."),
@@ -234,13 +249,13 @@ impl Worker {
       self.check_cancelled()?;
       return Ok(None);
     }
-    let build: PublishedVersion = serde_json::from_value(result["build"].take())
+    let build: PublishedUpdate = serde_json::from_value(result["build"].take())
       .map_err(|_| failure("Cannot inspect the update build."))?;
     self.check_cancelled()?;
     Ok(Some(build))
   }
 
-  fn transfer(&self, selected: &PublishedVersion) {
+  fn transfer(&self, selected: &PublishedUpdate) {
     let mut created = None;
     let result = self.download_build(selected, &mut created);
     match result {
@@ -265,7 +280,7 @@ impl Worker {
 
   fn download_build(
     &self,
-    selected: &PublishedVersion,
+    selected: &PublishedUpdate,
     created: &mut Option<String>,
   ) -> Result<PendingUpdate, WorkError> {
     let candidate = files::candidate(&self.target_path, &selected.sha256, selected.size)?;

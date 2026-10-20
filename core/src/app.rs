@@ -5,7 +5,8 @@ mod editor;
 pub(crate) mod host;
 mod view;
 
-use crate::state::{Command, SettingsPatch, WodexCore};
+use crate::state::{Command, SettingsPatch, WodexCore, OFFICIAL_UPDATE_REPOSITORY};
+use crate::update::UpdateChannel;
 use alloc::{
   format,
   string::{String, ToString},
@@ -26,7 +27,7 @@ pub struct App<H: Host> {
   version: String,
   demo: bool,
   running: bool,
-  checked_repository: String,
+  checked_source: Option<(String, UpdateChannel)>,
   stored_key: String,
   last_save: u64,
 }
@@ -45,7 +46,7 @@ impl<H: Host> App<H> {
       version: version.into(),
       demo,
       running: true,
-      checked_repository: String::new(),
+      checked_source: None,
       stored_key: String::new(),
       last_save: 0,
     };
@@ -78,7 +79,7 @@ impl<H: Host> App<H> {
     if show_updates {
       app.ui.page = Page::Updates;
       app.ui.notice.clear();
-      app.ui.focused = "update-source".into();
+      app.ui.focused = app.update_focus().into();
     }
     Ok(app)
   }
@@ -136,13 +137,8 @@ impl<H: Host> App<H> {
 
   pub fn render(&mut self, canvas: &mut Canvas) -> Result<(), String> {
     let mut status = self.host.update_status();
-    if !self.host.update_active()
-      && self.core.state().settings.update_repository != self.checked_repository
-    {
-      status = UpdateStatus {
-        message: "Check this version source before downloading an update.".into(),
-        ..Default::default()
-      };
+    if !self.host.update_active() && !self.update_source_checked() {
+      status = UpdateStatus::default();
     }
     self.buttons = view::render(
       canvas,
@@ -163,6 +159,40 @@ impl<H: Host> App<H> {
 
   fn busy(&self) -> bool {
     self.streaming() || self.host.network_active()
+  }
+
+  fn update_source_checked(&self) -> bool {
+    let settings = &self.core.state().settings;
+    self.checked_source.as_ref().is_some_and(|(repository, channel)| {
+      !repository.is_empty()
+        && *repository == settings.update_repository
+        && *channel == settings.update_channel
+    })
+  }
+
+  fn update_focus(&self) -> &'static str {
+    if self.core.state().settings.update_repository.is_empty() {
+      "update-official"
+    } else {
+      "update-check"
+    }
+  }
+
+  fn invalidate_update_source(&mut self) {
+    self.checked_source = None;
+    self.buttons.clear();
+    self.ui.focused = self.update_focus().into();
+  }
+
+  fn update_settings_editable(&mut self) -> bool {
+    if self.demo || self.host.update_active() {
+      return false;
+    }
+    if self.busy() {
+      self.ui.notice = "Stop the current response before changing settings.".into();
+      return false;
+    }
+    true
   }
 
   fn save(&mut self) -> bool {
@@ -412,12 +442,7 @@ impl<H: Host> App<H> {
         self.ui.page = Page::Updates;
         self.ui.confirm_delete = false;
         self.ui.notice.clear();
-        self.ui.focused = if self.core.state().settings.update_repository.is_empty() {
-          "update-source"
-        } else {
-          "update-check"
-        }
-        .into();
+        self.ui.focused = self.update_focus().into();
       }
       Action::Retry => {
         self.ui.page = Page::Chat;
@@ -439,20 +464,38 @@ impl<H: Host> App<H> {
         self.ui.focused = "compose".into();
       }
       Action::UpdateCheck if !self.demo && !self.host.update_active() => {
-        let repository = self.core.state().settings.update_repository.clone();
-        let result = self.host.update_check(&repository);
-        if self.update_result(result) {
-          self.checked_repository = repository;
-          self.ui.focused = "update-cancel".into();
+        let settings = &self.core.state().settings;
+        let repository = settings.update_repository.clone();
+        let channel = settings.update_channel;
+        self.checked_source = None;
+        if !repository.is_empty() {
+          let result = self.host.update_check(&repository, channel);
+          if self.update_result(result) {
+            self.checked_source = Some((repository, channel));
+            self.ui.focused = "update-cancel".into();
+          }
+        }
+      }
+      Action::UpdateOfficial if self.update_settings_editable() => {
+        self.commit_edit(
+          EditTarget::Setting(Setting::UpdateRepository),
+          OFFICIAL_UPDATE_REPOSITORY.into(),
+        );
+      }
+      Action::UpdateChannel(channel) if self.update_settings_editable() => {
+        if self.core.state().settings.update_channel != channel {
+          let patch = SettingsPatch { update_channel: Some(channel), ..Default::default() };
+          if self.mutate(Command::Settings { settings: patch }).is_some() {
+            self.invalidate_update_source();
+          }
         }
       }
       Action::UpdateDownload
         if !self.demo
           && self.host.update_supported()
-          && !self.checked_repository.is_empty()
+          && self.update_source_checked()
           && !self.host.update_active()
-          && self.host.update_status().phase == UpdatePhase::Available
-          && self.core.state().settings.update_repository == self.checked_repository =>
+          && self.host.update_status().phase == UpdatePhase::Available =>
       {
         let result = self.host.update_download();
         if self.update_result(result) {
@@ -490,10 +533,9 @@ impl<H: Host> App<H> {
   fn install(&mut self) {
     if self.demo
       || !self.host.update_supported()
-      || self.checked_repository.is_empty()
+      || !self.update_source_checked()
       || self.host.update_active()
       || self.host.update_status().phase != UpdatePhase::Ready
-      || self.core.state().settings.update_repository != self.checked_repository
     {
       return;
     }
@@ -560,6 +602,9 @@ impl<H: Host> App<H> {
       self.ui.focused = "send".into();
       return;
     };
+    if setting == Setting::UpdateRepository && !self.update_settings_editable() {
+      return;
+    }
     let mut patch = SettingsPatch::default();
     match setting {
       Setting::ApiKey => patch.api_key = Some(value),
@@ -581,14 +626,7 @@ impl<H: Host> App<H> {
         self.ui.environment_key = false;
         self.save();
       } else if setting == Setting::UpdateRepository {
-        self.checked_repository.clear();
-        self.buttons.clear();
-        self.ui.focused = if self.core.state().settings.update_repository.is_empty() {
-          "update-source"
-        } else {
-          "update-check"
-        }
-        .into();
+        self.invalidate_update_source();
       }
     }
   }

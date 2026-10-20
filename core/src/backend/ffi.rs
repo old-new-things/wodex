@@ -253,9 +253,35 @@ pub unsafe extern "C" fn wodex_updater_check(
   repository: *const c_char,
   error: *mut *mut c_char,
 ) -> bool {
-  checked((|| value.as_mut().ok_or("Missing update backend.")?.check(text(repository)?))(), error)
-    .is_some()
+  checked(
+    (|| {
+      value
+        .as_mut()
+        .ok_or("Missing update backend.")?
+        .check(text(repository)?, crate::update::UpdateChannel::Version)
+    })(),
+    error,
+  )
+  .is_some()
 }
+#[no_mangle]
+pub unsafe extern "C" fn wodex_updater_check_channel(
+  value: *mut Updater,
+  repository: *const c_char,
+  channel: *const c_char,
+  error: *mut *mut c_char,
+) -> bool {
+  let result = (|| {
+    let channel = match text(channel)? {
+      "version" => crate::update::UpdateChannel::Version,
+      "nightly" => crate::update::UpdateChannel::Nightly,
+      _ => return Err(String::from("Unknown update channel.")),
+    };
+    value.as_mut().ok_or("Missing update backend.")?.check(text(repository)?, channel)
+  })();
+  checked(result, error).is_some()
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn wodex_updater_download(
   value: *mut Updater,

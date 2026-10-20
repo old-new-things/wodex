@@ -162,8 +162,10 @@ void check_response(const Json &state) {
     "The application did not persist streamed token usage.");
   check(state.at("settings").at("api_key") == stored_key,
     "The application wrote the environment API key into persistent settings.");
-  check(state.at("settings").at("update_repository") == "",
-    "The application configured an unsolicited update source.");
+  check(state.at("settings").at("update_repository") == "old-new-things/wodex",
+    "The application lost the official GitHub Pages update source.");
+  check(state.at("settings").at("update_channel") == "version",
+    "The application enabled experimental nightly updates without an explicit selection.");
 }
 
 void check_chat_pixels(SDL_Renderer *renderer) {
@@ -217,8 +219,22 @@ int main(int argc, char **argv) {
       app.click(450, 550); // Settings: retry last response.
       check_response(wait_for_response(app, path));
       app.key(SDLK_F1);
-      app.click(1120, 85); // Settings: updates, with its source deliberately unset.
-      app.frame();
+      app.click(1120, 85); // Settings: updates.
+      app.click(580, 252); // Select optional nightly builds.
+      check(saved_state(path).at("settings").at("update_channel") == "nightly",
+        "Selecting Nightly did not persist the update channel.");
+      app.click(400, 252); // Restore published versions.
+      check(saved_state(path).at("settings").at("update_channel") == "version",
+        "Selecting Versions did not restore the default channel.");
+      app.click(1140, 188); // Change the update source.
+      app.key(SDLK_a, KMOD_CTRL);
+      app.key(SDLK_BACKSPACE);
+      app.key(SDLK_RETURN);
+      check(saved_state(path).at("settings").at("update_repository") == "",
+        "Clearing the update source did not disable checks.");
+      app.click(970, 188); // Restore the official source without using the keyboard.
+      check(saved_state(path).at("settings").at("update_repository") == "old-new-things/wodex",
+        "Use Wodex did not restore the official update source.");
       app.close();
     }
     {

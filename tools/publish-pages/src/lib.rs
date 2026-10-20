@@ -55,6 +55,16 @@ pub struct Options {
   pub tag: Option<String>,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BuildInfo {
+  schema_version: u32,
+  version: String,
+  channel: Channel,
+  timestamp: String,
+  commit: String,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Asset {
@@ -320,6 +330,21 @@ fn inspect_artifacts(dir: &Path) -> Result<(String, BTreeMap<String, Asset>)> {
   Ok((parsed_version.to_owned(), assets))
 }
 
+fn verify_build_info(options: &Options, version: &str) -> Result<()> {
+  let info: BuildInfo =
+    serde_json::from_slice(&bytes(&options.artifact_dir.join("build-info.json"), 1024)?)
+      .map_err(|_| "Incoming build identity metadata is invalid.")?;
+  if info.schema_version != 1
+    || info.version != version
+    || info.channel != options.channel
+    || info.timestamp != options.timestamp
+    || info.commit != options.commit
+  {
+    return Err("Incoming build identity does not match the publication metadata.".into());
+  }
+  Ok(())
+}
+
 fn validate_assets(assets: &BTreeMap<String, Asset>) -> Result<()> {
   if assets.len() != FILES.len() || FILES.iter().any(|name| !assets.contains_key(*name)) {
     return Err("Catalog must contain exactly the supported download files.".into());
@@ -438,7 +463,7 @@ fn html(catalog: &Catalog) -> String {
     (
       Channel::Nightly,
       "Nightly",
-      "Recent successful builds from the main branch. Dates are in UTC.",
+      "Recent successful builds from the main branch. Opt in to Nightly in the app's update settings. Dates are in UTC.",
     ),
     (
       Channel::Version,
@@ -492,6 +517,7 @@ fn html(catalog: &Catalog) -> String {
     Pick a recent nightly or an explicit version below.</p><nav aria-label=\"Download channels\">\
     <a href=\"#nightly\">Nightly</a><a href=\"#version\">Versions</a></nav></header>\
     <main id=\"downloads\">{content}</main><footer>Copy <code>wodex.nro</code> to <code>sdmc:/switch/wodex/</code> and open it with the Homebrew Menu. \
+    In Wodex, open Settings → Updates to check this site. Versions is the default channel; Nightly is optional. \
     <a href=\"catalog.json\">Build catalog</a></footer></body></html>\n"
   )
 }
@@ -512,6 +538,27 @@ fn stable(catalog: &Catalog, base: &str) -> serde_json::Value {
       })
     });
   serde_json::json!({"schema_version":1, "channel":"version", "build":build})
+}
+
+fn nightly(catalog: &Catalog, base: &str) -> serde_json::Value {
+  let build = catalog
+    .builds
+    .iter()
+    .filter(|build| build.channel == Channel::Nightly)
+    .max_by(|left, right| left.timestamp.cmp(&right.timestamp).then_with(|| left.id.cmp(&right.id)))
+    .map(|build| {
+      serde_json::json!({
+        "version": build.version,
+        "url": format!("{base}/builds/nightly/{}/wodex.nro", build.id),
+        "size": build.size,
+        "sha256": build.sha256,
+        "notes": format!("Wodex {} nightly, built {}.", build.version, build.timestamp),
+        "id": build.id,
+        "timestamp": build.timestamp,
+        "commit": build.commit,
+      })
+    });
+  serde_json::json!({"schema_version":1, "channel":"nightly", "build":build})
 }
 
 fn write(path: &Path, contents: &[u8]) -> Result<()> {
@@ -559,6 +606,11 @@ fn write_site(
     &staging.join("updates/stable.json"),
     &serde_json::to_vec_pretty(&stable(catalog, &options.base_url))
       .map_err(|_| "Cannot serialize update feed.")?,
+  )?;
+  write(
+    &staging.join("updates/nightly.json"),
+    &serde_json::to_vec_pretty(&nightly(catalog, &options.base_url))
+      .map_err(|_| "Cannot serialize update feed.")?,
   )
 }
 
@@ -571,6 +623,7 @@ pub fn publish(options: &Options) -> Result<Catalog> {
     return Err("Commit must contain 40 lowercase hexadecimal characters.".into());
   }
   let (artifact_version, assets) = inspect_artifacts(&options.artifact_dir)?;
+  verify_build_info(options, &artifact_version)?;
   match (options.channel, options.tag.as_deref()) {
     (Channel::Nightly, None) => {}
     (Channel::Version, Some(tag)) if tag == format!("v{artifact_version}") => {}

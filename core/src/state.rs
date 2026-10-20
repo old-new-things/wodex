@@ -1,4 +1,5 @@
 use crate::stream::{Event, Stream};
+use crate::update::UpdateChannel;
 use alloc::{format, string::String, vec, vec::Vec};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -13,6 +14,7 @@ const MAX_ANSWER_BYTES: usize = 512 * 1024;
 const MAX_TOTAL_TEXT: usize = 2 * 1024 * 1024;
 const MAX_STREAM_BYTES: usize = 16 * 1024 * 1024;
 const MAX_ERROR_CHARS: usize = 512;
+pub(crate) const OFFICIAL_UPDATE_REPOSITORY: &str = "old-new-things/wodex";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -25,6 +27,8 @@ pub struct Settings {
   pub system_prompt: String,
   #[serde(default)]
   pub update_repository: String,
+  #[serde(default)]
+  pub update_channel: UpdateChannel,
 }
 
 impl Default for Settings {
@@ -36,7 +40,8 @@ impl Default for Settings {
       thinking: false,
       max_tokens: 4096,
       system_prompt: "You are a helpful assistant. Give clear, accurate answers.".into(),
-      update_repository: String::new(),
+      update_repository: OFFICIAL_UPDATE_REPOSITORY.into(),
+      update_channel: UpdateChannel::Version,
     }
   }
 }
@@ -51,6 +56,7 @@ pub(crate) struct SettingsPatch {
   pub max_tokens: Option<u32>,
   pub system_prompt: Option<String>,
   pub update_repository: Option<String>,
+  pub update_channel: Option<UpdateChannel>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
@@ -263,7 +269,16 @@ impl WodexCore {
             }
           })+};
         }
-        apply!(api_key, base_url, model, thinking, max_tokens, system_prompt, update_repository);
+        apply!(
+          api_key,
+          base_url,
+          model,
+          thinking,
+          max_tokens,
+          system_prompt,
+          update_repository,
+          update_channel
+        );
         settings.base_url = settings.base_url.trim_end_matches('/').into();
         validate_settings(&settings)?;
         self.state.settings = settings;
@@ -1185,12 +1200,15 @@ mod tests {
   #[test]
   fn legacy_saves_default_to_no_update_source_and_source_settings_are_validated() {
     let mut core = ready();
-    assert!(core.state.settings.update_repository.is_empty());
+    assert_eq!(core.state.settings.update_repository, OFFICIAL_UPDATE_REPOSITORY);
+    assert_eq!(core.state.settings.update_channel, UpdateChannel::Version);
     let mut saved = command(&mut core, json!({"op":"export"}))["data"].clone();
     saved["settings"].as_object_mut().unwrap().remove("update_repository");
+    saved["settings"].as_object_mut().unwrap().remove("update_channel");
     let mut restored = WodexCore::new(Some(&saved.to_string()));
     assert!(restored.load_error.is_none());
     assert!(restored.state.settings.update_repository.is_empty());
+    assert_eq!(restored.state.settings.update_channel, UpdateChannel::Version);
     assert_eq!(
       command(
         &mut restored,
@@ -1219,5 +1237,36 @@ mod tests {
       command(&mut restored, json!({"op":"settings","settings":{"update_repository":""}}))["ok"],
       true
     );
+    let exported = command(&mut restored, json!({"op":"export"}));
+    let disabled = WodexCore::new(Some(&exported["data"].to_string()));
+    assert!(disabled.load_error.is_none());
+    assert!(disabled.state.settings.update_repository.is_empty());
+  }
+
+  #[test]
+  fn update_channel_is_explicit_validated_and_persisted() {
+    let mut core = ready();
+    assert_eq!(
+      command(&mut core, json!({"op":"settings","settings":{"update_channel":"nightly"}}))["ok"],
+      true
+    );
+    assert_eq!(core.state.settings.update_channel, UpdateChannel::Nightly);
+    for invalid in [json!("stable"), json!("Nightly"), json!(""), json!(42), json!({})] {
+      assert_eq!(
+        command(&mut core, json!({"op":"settings","settings":{"update_channel":invalid}}))["ok"],
+        false
+      );
+      assert_eq!(core.state.settings.update_channel, UpdateChannel::Nightly);
+    }
+    let exported = command(&mut core, json!({"op":"export"}));
+    assert_eq!(exported["data"]["settings"]["update_channel"], "nightly");
+    let restored = WodexCore::new(Some(&exported["data"].to_string()));
+    assert!(restored.load_error.is_none());
+    assert_eq!(restored.state.settings.update_channel, UpdateChannel::Nightly);
+    assert_eq!(
+      command(&mut core, json!({"op":"settings","settings":{"update_channel":"version"}}))["ok"],
+      true
+    );
+    assert_eq!(core.state.settings.update_channel, UpdateChannel::Version);
   }
 }

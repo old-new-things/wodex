@@ -55,12 +55,13 @@ endif()
 
 set(RUST_LIBRARY "${CMAKE_SOURCE_DIR}/target/release/${CMAKE_STATIC_LIBRARY_PREFIX}wodex_core${CMAKE_STATIC_LIBRARY_SUFFIX}")
 file(GLOB_RECURSE RUST_SOURCES CONFIGURE_DEPENDS "core/src/*.rs")
-add_custom_command(OUTPUT "${RUST_LIBRARY}"
+# Let Cargo track environment-based build identity as well as source changes.
+add_custom_target(wodex_core_build
   COMMAND "${CARGO_EXECUTABLE}" build --locked --release -p wodex-core
-  DEPENDS ${RUST_SOURCES} Cargo.toml Cargo.lock core/Cargo.toml
+  BYPRODUCTS "${RUST_LIBRARY}"
+  DEPENDS ${RUST_SOURCES} Cargo.toml Cargo.lock core/Cargo.toml core/build.rs
   WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
   COMMENT "Building Rust application and conversation core")
-add_custom_target(wodex_core_build DEPENDS "${RUST_LIBRARY}")
 add_library(wodex_core STATIC IMPORTED)
 set_target_properties(wodex_core PROPERTIES IMPORTED_LOCATION "${RUST_LIBRARY}")
 target_link_libraries(wodex_core INTERFACE ${CMAKE_DL_LIBS})

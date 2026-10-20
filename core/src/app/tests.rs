@@ -14,7 +14,7 @@ struct MockHost {
   network_active: bool,
   update: UpdateStatus,
   update_supported: bool,
-  update_checks: Vec<String>,
+  update_checks: Vec<(String, UpdateChannel)>,
   downloads: usize,
   installs: usize,
   fail_save: bool,
@@ -83,8 +83,8 @@ impl Host for MockHost {
   fn update_active(&self) -> bool {
     matches!(self.update.phase, UpdatePhase::Checking | UpdatePhase::Downloading)
   }
-  fn update_check(&mut self, repository: &str) -> Result<(), String> {
-    self.update_checks.push(repository.into());
+  fn update_check(&mut self, repository: &str, channel: UpdateChannel) -> Result<(), String> {
+    self.update_checks.push((repository.into(), channel));
     self.update.phase = UpdatePhase::Checking;
     Ok(())
   }
@@ -215,7 +215,7 @@ fn changing_version_source_invalidates_previous_download_and_install_actions() {
   app.host.update_supported = true;
   set_repository(&mut app, "first/wodex");
   app.dispatch(Action::UpdateCheck);
-  assert_eq!(app.host.update_checks, vec!["first/wodex"]);
+  assert_eq!(app.host.update_checks, vec![("first/wodex".into(), UpdateChannel::Version)]);
   app.host.update.phase = UpdatePhase::Ready;
   set_repository(&mut app, "second/wodex");
   app.dispatch(Action::UpdateDownload);
@@ -231,11 +231,85 @@ fn changing_version_source_invalidates_previous_download_and_install_actions() {
 }
 
 #[test]
+fn changing_channel_invalidates_available_and_staged_updates_even_when_changed_back() {
+  let mut app = app();
+  app.host.update_supported = true;
+  app.ui.page = Page::Updates;
+  let (_backend, mut canvas) = canvas::test_backend::canvas();
+  for phase in [UpdatePhase::Available, UpdatePhase::Ready] {
+    app.dispatch(Action::UpdateCheck);
+    app.host.update.phase = phase;
+    app.dispatch(Action::UpdateChannel(UpdateChannel::Nightly));
+    assert_eq!(app.core.state().settings.update_channel, UpdateChannel::Nightly);
+    assert_eq!(last_saved(&app)["settings"]["update_channel"], "nightly");
+    app.render(&mut canvas).unwrap();
+    assert!(!app
+      .buttons
+      .iter()
+      .any(|button| { matches!(button.action, Action::UpdateDownload | Action::UpdateInstall) }));
+    app.dispatch(Action::UpdateDownload);
+    app.dispatch(Action::UpdateInstall);
+    app.dispatch(Action::UpdateChannel(UpdateChannel::Version));
+    app.dispatch(Action::UpdateDownload);
+    app.dispatch(Action::UpdateInstall);
+    assert_eq!(app.host.downloads, 0);
+    assert_eq!(app.host.installs, 0);
+    assert!(app.running);
+  }
+  app.dispatch(Action::UpdateChannel(UpdateChannel::Nightly));
+  app.dispatch(Action::UpdateCheck);
+  assert_eq!(
+    app.host.update_checks.last(),
+    Some(&(OFFICIAL_UPDATE_REPOSITORY.into(), UpdateChannel::Nightly))
+  );
+  app.host.update.phase = UpdatePhase::Available;
+  app.dispatch(Action::UpdateDownload);
+  assert_eq!(app.host.downloads, 1);
+  drop(canvas);
+}
+
+#[test]
+fn official_source_can_be_enabled_without_a_keyboard_and_empty_source_never_checks() {
+  let mut app = app();
+  set_repository(&mut app, "");
+  app.dispatch(Action::UpdateCheck);
+  assert!(app.host.update_checks.is_empty());
+  app.dispatch(Action::UpdateChannel(UpdateChannel::Nightly));
+  app.dispatch(Action::UpdateOfficial);
+  assert_eq!(app.core.state().settings.update_repository, OFFICIAL_UPDATE_REPOSITORY);
+  assert_eq!(last_saved(&app)["settings"]["update_repository"], OFFICIAL_UPDATE_REPOSITORY);
+  assert_eq!(app.core.state().settings.update_channel, UpdateChannel::Nightly);
+  assert_eq!(app.ui.focused, "update-check");
+  assert!(app.checked_source.is_none());
+}
+
+#[test]
+fn active_transfer_and_demo_guard_update_settings_even_for_stale_actions() {
+  let mut app = app();
+  set_repository(&mut app, "custom/wodex");
+  for phase in [UpdatePhase::Checking, UpdatePhase::Downloading] {
+    app.host.update.phase = phase;
+    app.dispatch(Action::UpdateChannel(UpdateChannel::Nightly));
+    app.dispatch(Action::UpdateOfficial);
+    set_repository(&mut app, "another/wodex");
+    assert_eq!(app.core.state().settings.update_channel, UpdateChannel::Version);
+    assert_eq!(app.core.state().settings.update_repository, "custom/wodex");
+  }
+  app.host.update.phase = UpdatePhase::Idle;
+  app.demo = true;
+  app.dispatch(Action::UpdateChannel(UpdateChannel::Nightly));
+  app.dispatch(Action::UpdateOfficial);
+  set_repository(&mut app, "another/wodex");
+  assert_eq!(app.core.state().settings.update_channel, UpdateChannel::Version);
+  assert_eq!(app.core.state().settings.update_repository, "custom/wodex");
+}
+
+#[test]
 fn installation_requires_an_explicit_action_idle_chat_and_successful_save() {
   let mut app = app();
   app.host.update_supported = true;
   set_repository(&mut app, "owner/wodex");
-  app.checked_repository = "owner/wodex".into();
+  app.checked_source = Some(("owner/wodex".into(), UpdateChannel::Version));
   app.host.update.phase = UpdatePhase::Ready;
   app.host.fail_save = true;
   app.dispatch(Action::UpdateInstall);

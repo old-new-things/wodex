@@ -62,7 +62,7 @@ class VerificationTests(unittest.TestCase):
     self.payloads = {}
     builds = []
     for channel, identity, marker in [
-      ("nightly", "2026-10-20T120000Z-abcdef0", b"nightly"),
+      ("nightly", "20261020T120000Z-abcdef0", b"nightly"),
       ("version", "0.2.0", b"version"),
     ]:
       binary = marker * 25000
@@ -78,6 +78,7 @@ class VerificationTests(unittest.TestCase):
       builds.append({"channel": channel, "id": identity, "assets": assets})
     self.write("catalog.json", json.dumps({"schema_version": 1, "builds": builds}).encode())
     self.write("updates/stable.json", b'{"schema_version":1,"channel":"version","build":null}')
+    self.write("updates/nightly.json", b'{"schema_version":1,"channel":"nightly","build":null}')
     self.write("index.html", b'<main><section id="nightly"></section><section id="version"></section></main>')
 
   def write(self, relative, payload):
@@ -102,7 +103,7 @@ class VerificationTests(unittest.TestCase):
 
   def test_exact_site_checks_both_channels_with_bounded_streaming(self):
     self.run_verify()
-    self.assertEqual(len(self.requests), 7)
+    self.assertEqual(len(self.requests), 8)
     self.assertEqual(self.clock.sleeps, [])
     binary_responses = [
       response for response in self.responses
@@ -125,7 +126,7 @@ class VerificationTests(unittest.TestCase):
       return self.opener(request, timeout)
     self.run_verify(opener=stale_once)
     self.assertEqual(self.clock.sleeps, [25])
-    self.assertEqual(len(self.requests), 8)
+    self.assertEqual(len(self.requests), 9)
     self.assertIn("/catalog.json?", self.requests[0][0].full_url)
     self.assertIn("/catalog.json?", self.requests[1][0].full_url)
 
@@ -142,11 +143,11 @@ class VerificationTests(unittest.TestCase):
     self.assertFalse(any(line.startswith("Verified") for line in self.logs))
     self.assertTrue(any("does not match" in line for line in self.logs))
 
-  def test_stale_version_feed_or_page_prevents_payload_downloads(self):
-    for relative in ["updates/stable.json", "index.html"]:
+  def test_stale_update_feed_or_page_prevents_payload_downloads(self):
+    for relative in ["updates/stable.json", "updates/nightly.json", "index.html"]:
       with self.subTest(relative=relative):
         original = self.payloads[relative]
-        self.payloads[relative] = b"stale content"
+        self.payloads[relative] = b"x" * len(original)
         self.clock = Clock()
         self.requests = []
         try:
@@ -155,6 +156,12 @@ class VerificationTests(unittest.TestCase):
           self.assertFalse(any("/builds/" in request.full_url for request, _ in self.requests))
         finally:
           self.payloads[relative] = original
+
+  def test_missing_generated_nightly_feed_fails_before_network(self):
+    (self.root / "updates/nightly.json").unlink()
+    with self.assertRaisesRegex(VERIFY.VerificationError, "Cannot read generated file"):
+      self.run_verify()
+    self.assertEqual(self.requests, [])
 
   def test_redirect_handler_rejects_and_unexpected_final_urls_fail(self):
     handler = VERIFY.NoRedirect()
@@ -228,7 +235,7 @@ class VerificationTests(unittest.TestCase):
     self.write("catalog.json", json.dumps(catalog).encode())
     with self.assertRaisesRegex(VERIFY.VerificationError, "unsafe build path"):
       self.run_verify()
-    catalog["builds"][0]["id"] = "2026-10-20T120000Z-abcdef0"
+    catalog["builds"][0]["id"] = "20261020T120000Z-abcdef0"
     self.write("catalog.json", json.dumps(catalog).encode())
     local = self.root / "builds/version/0.2.0/wodex.nro"
     local.write_bytes(b"x" * local.stat().st_size)

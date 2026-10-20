@@ -21,6 +21,7 @@ MAX_NRO_BYTES = 128 * 1024 * 1024
 METADATA_LIMITS = {
   "catalog.json": 4 * 1024 * 1024,
   "updates/stable.json": 1024 * 1024,
+  "updates/nightly.json": 1024 * 1024,
   "index.html": 1024 * 1024,
 }
 
@@ -239,7 +240,7 @@ def verify_site(
       # Do not download any payload while the CDN still serves old metadata.
       for expected in metadata + downloads:
         verify_file(site_url, expected, nonce, opener, deadline, clock, request_timeout)
-      report(f"Verified the public page, catalog, version feed, and {len(downloads) // 2} channel downloads.")
+      report(f"Verified the public page, catalog, both update feeds, and {len(downloads) // 2} channel downloads.")
       return
     except PublicationTimeout:
       raise

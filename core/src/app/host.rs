@@ -8,6 +8,7 @@ use crate::backend::{
   updater::{PendingUpdate, Updater},
   BackendApi,
 };
+use crate::update::UpdateChannel;
 use alloc::{collections::VecDeque, format, string::String, vec::Vec};
 use core::{ffi::c_void, slice};
 
@@ -127,7 +128,7 @@ pub trait Host {
   fn update_status(&self) -> UpdateStatus;
   fn update_supported(&self) -> bool;
   fn update_active(&self) -> bool;
-  fn update_check(&mut self, repository: &str) -> Result<(), String>;
+  fn update_check(&mut self, repository: &str, channel: UpdateChannel) -> Result<(), String>;
   fn update_download(&mut self) -> Result<(), String>;
   fn update_cancel(&mut self);
   fn prepare_install(&mut self) -> Result<bool, String>;
@@ -326,8 +327,8 @@ impl Host for NativeHost {
   fn update_active(&self) -> bool {
     self.updater.active()
   }
-  fn update_check(&mut self, repository: &str) -> Result<(), String> {
-    self.updater.check(repository)
+  fn update_check(&mut self, repository: &str, channel: UpdateChannel) -> Result<(), String> {
+    self.updater.check(repository, channel)
   }
   fn update_download(&mut self) -> Result<(), String> {
     self.updater.download()

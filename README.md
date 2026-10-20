@@ -102,7 +102,9 @@ SDL_ttf/FreeType reads UTF-8 text using the font's stream API; Wodex does not ma
 
 ## Self-updates
 
-Open **Settings → Updates**, set the update source to `old-new-things/wodex`, then choose **Check for updates**, **Download**, and **Install and exit**. The source is unset by default. Checks are manual and follow the Pages **Versions** channel. Nightlies are downloaded and installed manually. Desktop builds can check the version feed; self-installation is supported on Switch.
+Open **Settings → Updates**, choose **Versions** or opt into **Nightly**, then choose **Check for updates**, **Download**, and **Install and exit**. New installations use the official `old-new-things/wodex` Pages source and Versions channel. Existing empty sources stay disabled; **Use Wodex** selects the official source. Checks are manual. Desktop builds can check both feeds; self-installation is supported on Switch.
+
+Nightlies carry a UTC build timestamp and commit so the app can detect newer builds sharing the same version number. Returning to Versions allows the final version matching an installed nightly; older version numbers are never selected.
 
 Wodex downloads a newer version's `wodex.nro` to a sibling temporary file and verifies the feed's advertised size, SHA-256, executable headers and embedded assets. Installing saves conversations, closes the interface and embedded resources, preserves a launchable `.previous.nro`, and replaces the actual NRO path supplied by the loader. Reopen Wodex from hbmenu afterward. A normal exit never installs a downloaded update.
 

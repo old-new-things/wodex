@@ -20,6 +20,33 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  identity:
+    name: Build identity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      channel: ${{ steps.identity.outputs.channel }}
+      timestamp: ${{ steps.identity.outputs.timestamp }}
+      commit: ${{ steps.identity.outputs.commit }}
+      metadata: ${{ steps.identity.outputs.metadata }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Resolve source workflow attempt
+        id: identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/pages-build.py --repository "$GITHUB_REPOSITORY" \
+            --run-id "$GITHUB_RUN_ID" --attempt "$GITHUB_RUN_ATTEMPT" \
+            --commit "$GITHUB_SHA" --ref "$GITHUB_REF" --event "$GITHUB_EVENT_NAME" \
+            --github-output "$GITHUB_OUTPUT"
+
   desktop:
     name: Rust and desktop tests
     runs-on: ubuntu-24.04
@@ -43,6 +70,14 @@ jobs:
           cargo clippy --workspace --all-targets --locked -- -D warnings
           cargo test --workspace --locked
           python3 -m unittest discover -s tests -p 'test_*pages*.py'
+      - name: Check embedded update identity
+        run: |
+          for build_channel in nightly version; do
+            WODEX_BUILD_CHANNEL="$build_channel" \
+            WODEX_BUILD_TIMESTAMP=2026-10-20T12:34:56Z \
+            WODEX_BUILD_COMMIT=0123456789abcdef0123456789abcdef01234567 \
+              cargo test --locked -p wodex-core embedded_identity_prevents_reoffering_the_installed_build
+          done
       - name: Build desktop client
         run: |
           cmake -S . -B build/desktop -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
@@ -60,12 +95,16 @@ jobs:
 
   switch:
     name: Switch no_std build
+    needs: identity
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     container:
       image: devkitpro/devkita64:20260219
     env:
       WODEX_RUST_TOOLCHAIN: nightly-2026-10-01
+      WODEX_BUILD_CHANNEL: ${{ needs.identity.outputs.channel }}
+      WODEX_BUILD_TIMESTAMP: ${{ needs.identity.outputs.timestamp }}
+      WODEX_BUILD_COMMIT: ${{ needs.identity.outputs.commit }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -85,7 +124,10 @@ jobs:
             exit 1
           fi
       - name: Prepare portable update assets
+        env:
+          BUILD_METADATA: ${{ needs.identity.outputs.metadata }}
         run: |
+          printf '%s\n' "$BUILD_METADATA" > build/switch/build-info.json
           cp VERSION LICENSE THIRD_PARTY.md build/switch/
           cp romfs/fonts/OFL.txt build/switch/NotoSansCJK-OFL.txt
           cp romfs/fonts/README.md build/switch/NotoSansCJK-README.md
@@ -102,6 +144,7 @@ jobs:
             build/switch/wodex.nro
             build/switch/wodex.nro.sha256
             build/switch/VERSION
+            build/switch/build-info.json
             build/switch/LICENSE
             build/switch/THIRD_PARTY.md
             build/switch/licenses.tar.gz
