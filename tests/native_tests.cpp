@@ -1,0 +1,290 @@
+#include "platform.hpp"
+#include "transport.hpp"
+#include "wodex_core.h"
+
+#include <nlohmann/json.hpp>
+
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+#include <iostream>
+#include <memory>
+#include <stdexcept>
+#include <string>
+#include <sys/stat.h>
+#include <thread>
+#include <unistd.h>
+
+namespace {
+
+using Json = nlohmann::json;
+using Clock = std::chrono::steady_clock;
+constexpr const char* mock_key = "mock-local-test-key";
+int passed = 0;
+
+void check(bool condition, const char* description) {
+  if (!condition) throw std::runtime_error(description);
+  ++passed;
+}
+
+Json read_json(char* raw) {
+  std::unique_ptr<char, decltype(&wodex_string_free)> owned{raw, &wodex_string_free};
+  if (!raw) throw std::runtime_error("The Rust core returned a null response.");
+  return Json::parse(raw);
+}
+
+class Core {
+public:
+  explicit Core(const char* saved = nullptr) : value_(wodex_new(saved), &wodex_free) {
+    if (!value_) throw std::runtime_error("Cannot create the Rust core.");
+  }
+
+  Json call(const Json& command) { return read_json(wodex_call(value_.get(), command.dump().c_str())); }
+  Json state() { return call({{"op", "snapshot"}}).at("state"); }
+  Json feed(const std::string& data, bool fragment = false) {
+    Json result;
+    const std::size_t stride = fragment ? 1 : data.size();
+    for (std::size_t offset = 0; offset < data.size(); offset += stride) {
+      const auto count = std::min(stride, data.size() - offset);
+      result = read_json(wodex_feed(value_.get(),
+        reinterpret_cast<const std::uint8_t*>(data.data() + offset), count));
+      if (!result.value("ok", false)) break;
+    }
+    return result;
+  }
+
+private:
+  std::unique_ptr<WodexCore, decltype(&wodex_free)> value_;
+};
+
+Json request(Core& core, const std::string& endpoint) {
+  const auto settings = core.call({{"op", "settings"}, {"settings", {
+    {"api_key", mock_key}, {"base_url", endpoint}, {"model", "mock-model"}, {"thinking", true}
+  }}});
+  check(settings.value("ok", false), "The core rejected valid mock settings.");
+  const auto response = core.call({{"op", "send"}, {"content", "Hello, Switch!"}});
+  check(response.value("ok", false), "The core did not create a chat request.");
+  return response.at("request");
+}
+
+void start(wodex::Transport& transport, const Json& request) {
+  transport.start(request.at("url").get<std::string>(), request.at("api_key").get<std::string>(),
+    request.at("body").dump());
+}
+
+struct Result {
+  std::string data;
+  std::string error;
+  long status = 0;
+};
+
+Result drain(wodex::Transport& transport, Core* core = nullptr, bool fragment = false) {
+  const auto deadline = Clock::now() + std::chrono::seconds{10};
+  Result result;
+  while (Clock::now() < deadline) {
+    for (auto& event : transport.poll()) {
+      if (event.kind == wodex::TransportEvent::Data) {
+        result.data += event.data;
+        if (core && core->state().value("is_streaming", false)) core->feed(event.data, fragment);
+      } else {
+        result.status = event.http_status;
+        result.error = event.error;
+        if (core) core->call({{"op", "finish"}, {"http_status", event.http_status}, {"error", event.error}});
+        check(!transport.active(), "Finished was published before the transport became inactive.");
+        return result;
+      }
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds{2});
+  }
+  transport.cancel();
+  throw std::runtime_error("The local mock request did not finish before its deadline.");
+}
+
+void test_normal(const std::string& base_url) {
+  Core core;
+  wodex::Transport transport;
+  const auto outgoing = request(core, base_url + "/normal");
+  const auto& body = outgoing.at("body");
+  check(body.at("stream") == true && body.at("stream_options").at("include_usage") == true,
+    "The request omitted streaming or usage options.");
+  start(transport, outgoing);
+  const auto result = drain(transport, &core, true);
+  check(result.status == 200 && result.error.empty(), "The normal mock response failed.");
+  const auto state = core.state();
+  const auto& answer = state.at("conversations").at(0).at("messages").at(1);
+  check(answer.at("content") == "你好，Switch! 🌿", "UTF-8 answer fragments were not preserved.");
+  check(answer.at("reasoning_content") == "思考中…", "Reasoning fragments were not preserved.");
+  check(answer.at("status") == "complete" && answer.at("finish_reason") == "stop",
+    "The final answer state was incorrect.");
+  check(answer.at("usage").at("total_tokens") == 15, "Usage was not retained.");
+  check(state.at("is_streaming") == false && state.at("error").is_null(), "The stream did not end cleanly.");
+
+  const auto retry = core.call({{"op", "retry"}});
+  check(retry.at("ok") == true, "Retry did not prepare another request.");
+  for (const auto& message : retry.at("request").at("body").at("messages")) {
+    check(!message.contains("reasoning_content"), "Private reasoning was sent in request history.");
+  }
+  core.call({{"op", "cancel"}});
+}
+
+void test_http_errors(const std::string& base_url) {
+  for (const auto& scenario : {std::pair{"unauthorized", 401L}, std::pair{"redirect", 302L}}) {
+    Core core;
+    wodex::Transport transport;
+    start(transport, request(core, base_url + "/" + scenario.first));
+    const auto result = drain(transport, &core);
+    check(result.status == scenario.second && !result.error.empty(), "An HTTP error was not reported.");
+    check(result.data.empty(), "An HTTP error body reached the chat parser.");
+    check(result.error.find(mock_key) == std::string::npos &&
+      result.error.find("private-error-body") == std::string::npos, "An HTTP error leaked private provider text.");
+    const auto state = core.state();
+    check(state.at("conversations").at(0).at("messages").at(1).at("status") == "error",
+      "An HTTP failure was not retained as an error message.");
+  }
+}
+
+void test_truncated(const std::string& base_url) {
+  Core core;
+  wodex::Transport transport;
+  start(transport, request(core, base_url + "/truncated"));
+  const auto result = drain(transport, &core);
+  const auto state = core.state();
+  const auto& answer = state.at("conversations").at(0).at("messages").at(1);
+  check(result.status == 200 && result.error.empty(), "The truncated mock request did not reach the parser.");
+  check(answer.at("content") == "Partial answer" && answer.at("status") == "error",
+    "An unfinished SSE stream was treated as a complete answer.");
+  check(state.at("error").is_string(), "A truncated stream did not produce a recoverable error.");
+}
+
+void test_cancel(const std::string& base_url) {
+  Core core;
+  wodex::Transport transport;
+  start(transport, request(core, base_url + "/cancel"));
+  const auto deadline = Clock::now() + std::chrono::seconds{5};
+  bool received = false;
+  while (!received && Clock::now() < deadline) {
+    for (auto& event : transport.poll()) {
+      if (event.kind == wodex::TransportEvent::Data) {
+        core.feed(event.data);
+        received = true;
+      } else throw std::runtime_error("The cancellable response finished unexpectedly.");
+    }
+    if (!received) std::this_thread::sleep_for(std::chrono::milliseconds{2});
+  }
+  check(received, "The cancellable mock never started streaming.");
+  const auto cancelled_at = Clock::now();
+  core.call({{"op", "cancel"}});
+  transport.cancel();
+  check(Clock::now() - cancelled_at < std::chrono::milliseconds{100}, "Cancel blocked the UI thread.");
+  const auto result = drain(transport, &core);
+  check(Clock::now() - cancelled_at < std::chrono::seconds{3}, "The transport did not stop promptly after cancellation.");
+  check(!result.error.empty(), "Cancellation did not produce a terminal transport event.");
+  check(core.state().at("conversations").at(0).at("messages").at(1).at("status") == "interrupted",
+    "Late transport completion overwrote the cancelled message status.");
+}
+
+void test_validation(const std::string& base_url) {
+  const std::string good_url = base_url + "/normal/chat/completions";
+  for (const auto& invalid : {std::string{"http://example.com/chat/completions"},
+       std::string{"file:///etc/passwd"}, std::string{"https://user:password@example.com"},
+       std::string{"https://api.deepseek.com/\nchat/completions"}}) {
+    wodex::Transport transport;
+    transport.start(invalid, mock_key, "{}");
+    const auto result = drain(transport);
+    check(result.status == 0 && !result.error.empty() && result.data.empty(), "An unsafe URL was accepted.");
+  }
+  wodex::Transport transport;
+  transport.start(good_url, "mock-key\r\nInjected: value", "{}");
+  const auto result = drain(transport);
+  check(result.status == 0 && !result.error.empty(), "An injected API header was accepted.");
+}
+
+void test_bounded_queue(const std::string& base_url) {
+  Core core;
+  wodex::Transport transport;
+  start(transport, request(core, base_url + "/oversized"));
+  const auto deadline = Clock::now() + std::chrono::seconds{5};
+  while (transport.active() && Clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds{5});
+  }
+  const auto result = drain(transport);
+  check(result.data.size() <= 8 * 1024 * 1024, "The network queue exceeded its memory limit.");
+  check(result.error.find("8 MiB") != std::string::npos, "An oversized response did not stop at the buffer limit.");
+  core.call({{"op", "cancel"}});
+}
+
+void test_persistence() {
+  char temporary[] = "/tmp/wodex-native-test-XXXXXX";
+  char* directory = ::mkdtemp(temporary);
+  if (!directory) throw std::runtime_error("Cannot create temporary storage for tests.");
+  const std::filesystem::path root{directory};
+  struct Cleanup {
+    std::filesystem::path root;
+    ~Cleanup() { std::error_code error; std::filesystem::remove_all(root, error); }
+  } cleanup{root};
+  const std::string path = (root / "state.json").string();
+  Core core;
+  const std::string original = core.call({{"op", "export"}}).at("data").dump();
+  wodex::atomic_write(path, original);
+  check(wodex::load_file(path) == original, "Saved state did not round-trip through durable storage.");
+  struct stat status{};
+  check(::stat(path.c_str(), &status) == 0 && (status.st_mode & 0777) == 0600,
+    "Saved state permissions allow access by another user.");
+  core.call({{"op", "new_chat"}});
+  const std::string replacement = core.call({{"op", "export"}}).at("data").dump();
+  wodex::atomic_write(path, replacement);
+  Core restored{wodex::load_file(path).c_str()};
+  check(restored.state().at("conversations").size() == 2, "Replacing saved state lost the new conversation.");
+  check(wodex::load_file((root / "missing.json").string()).empty(), "A missing save was not handled as empty.");
+  bool failed = false;
+  try { wodex::atomic_write(path, std::string(32 * 1024 * 1024 + 1, 'x')); }
+  catch (const std::runtime_error&) { failed = true; }
+  check(failed && wodex::load_file(path) == replacement, "An invalid write damaged the previous save.");
+  const std::string corrupt = "{a broken save that must be preserved";
+  wodex::atomic_write(path, corrupt);
+  Core broken{wodex::load_file(path).c_str()};
+  check(broken.state().at("error").is_string(), "Corrupt saved data did not produce a recovery error.");
+  check(broken.call({{"op", "export"}}).at("ok") == false,
+    "A corrupt save can be overwritten before explicit recovery.");
+  check(wodex::load_file(path) == corrupt, "Corrupt saved data was modified during loading.");
+  const std::string earlier_backup = path + ".recovery-1";
+  wodex::atomic_write(earlier_backup, "an earlier recovery that must survive");
+  const std::string backup = wodex::preserve_file(path, corrupt);
+  check(backup == path + ".recovery-2", "Recovery did not skip an existing backup name.");
+  check(wodex::load_file(earlier_backup) == "an earlier recovery that must survive",
+    "A recovery file from an earlier launch was overwritten.");
+  const std::string later_backup = wodex::preserve_file(path, "another preserved version");
+  check(later_backup == path + ".recovery-3" && wodex::load_file(backup) == corrupt,
+    "Repeated recovery did not preserve all prior versions.");
+  check(::stat(backup.c_str(), &status) == 0 && (status.st_mode & 0777) == 0600,
+    "A recovery file allows access by another user.");
+  check(wodex::load_file(path) == corrupt, "Creating a recovery file changed the source.");
+  broken.call({{"op", "reset_storage"}});
+  const auto recovered = broken.call({{"op", "export"}});
+  check(recovered.at("ok") == true, "Explicit storage reset did not unblock export.");
+  wodex::atomic_write(path, recovered.at("data").dump());
+  check(wodex::load_file(backup) == corrupt,
+    "Explicit recovery did not preserve the corrupt backup.");
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+  try {
+    if (argc != 2) throw std::runtime_error("Run this binary through tests/mock_deepseek.py.");
+    const std::string base_url = argv[1];
+    test_normal(base_url);
+    test_http_errors(base_url);
+    test_truncated(base_url);
+    test_cancel(base_url);
+    test_validation(base_url);
+    test_bounded_queue(base_url);
+    test_persistence();
+    std::cout << "Native integration: " << passed << " checks passed.\n";
+    return 0;
+  } catch (const std::exception& error) {
+    std::cerr << "Native integration failed: " << error.what() << '\n';
+    return 1;
+  }
+}

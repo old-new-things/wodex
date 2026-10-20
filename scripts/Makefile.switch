@@ -1,0 +1,56 @@
+.DEFAULT_GOAL := all
+.SUFFIXES:
+
+ifeq ($(strip $(DEVKITPRO)),)
+$(error Set DEVKITPRO or run scripts/build-switch.sh)
+endif
+
+PROJECT_ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/..)
+BUILD_DIR := $(PROJECT_ROOT)/build/switch
+OUTPUT := $(BUILD_DIR)/wodex
+APP_TITLE := Wodex
+APP_AUTHOR := Wodex contributors
+APP_VERSION := 0.1.0
+APP_ICON := $(PROJECT_ROOT)/assets/icon.jpg
+
+include $(DEVKITPRO)/libnx/switch_rules
+
+PKG_CONFIG := $(DEVKITPRO)/portlibs/switch/bin/aarch64-none-elf-pkg-config
+PACKAGES := sdl2 SDL2_ttf libcurl
+PKG_CFLAGS := $(shell $(PKG_CONFIG) --cflags $(PACKAGES))
+PKG_LIBS := $(shell $(PKG_CONFIG) --static --libs $(PACKAGES))
+
+RUST_LIB ?= $(PROJECT_ROOT)/target/aarch64-nintendo-switch-freestanding/release/libwodex_core.a
+ARCH := -march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE
+CPPFLAGS := -D__SWITCH__ -I$(PROJECT_ROOT)/native/include -I$(PROJECT_ROOT)/external \
+  -I$(DEVKITPRO)/libnx/include $(PKG_CFLAGS)
+CXXFLAGS := -std=c++17 -O2 -g -Wall -Wextra -ffunction-sections -fdata-sections \
+  -pthread $(ARCH)
+LDFLAGS := -specs=$(DEVKITPRO)/libnx/switch.specs $(ARCH) -pthread \
+  -Wl,-Map,$(OUTPUT).map
+LIBPATHS := -L$(DEVKITPRO)/libnx/lib -L$(DEVKITPRO)/portlibs/switch/lib
+# Static libraries reference each other; resolve the entire group, then let
+# libnx's specs supply startup, relocations and the homebrew executable layout.
+LIBS := -Wl,--start-group $(RUST_LIB) $(PKG_LIBS) -lpthread -lnx -lc -lm -lstdc++ -Wl,--end-group
+LD := $(CXX)
+SOURCES := $(wildcard $(PROJECT_ROOT)/native/src/*.cpp)
+OFILES := $(patsubst $(PROJECT_ROOT)/native/src/%.cpp,$(BUILD_DIR)/%.o,$(SOURCES))
+ROMFS_FILES := $(wildcard $(PROJECT_ROOT)/romfs/*)
+NROFLAGS := --nacp=$(OUTPUT).nacp --icon=$(APP_ICON) --romfsdir=$(PROJECT_ROOT)/romfs
+
+.PHONY: all
+all: $(OUTPUT).nro
+
+$(BUILD_DIR):
+	mkdir -p "$@"
+
+$(BUILD_DIR)/%.o: $(PROJECT_ROOT)/native/src/%.cpp $(PROJECT_ROOT)/scripts/Makefile.switch | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -MMD -MP -c "$<" -o "$@"
+
+$(OUTPUT).elf: $(OFILES) $(RUST_LIB) $(PROJECT_ROOT)/scripts/Makefile.switch
+	$(LD) $(LDFLAGS) $(OFILES) $(LIBPATHS) $(LIBS) -o "$@"
+	$(NM) -CSn "$@" > "$(OUTPUT).lst"
+$(OUTPUT).nacp: | $(BUILD_DIR)
+$(OUTPUT).nro: $(OUTPUT).elf $(OUTPUT).nacp $(APP_ICON) $(ROMFS_FILES)
+
+-include $(OFILES:.o=.d)

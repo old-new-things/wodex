@@ -1,0 +1,55 @@
+name: Build and test
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  desktop:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build pkg-config libsdl2-dev libsdl2-ttf-dev libcurl4-openssl-dev
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal --component rustfmt,clippy
+      - name: Check Rust
+        run: |
+          cargo +stable fmt --all -- --check
+          cargo +stable clippy --workspace --all-targets --locked -- -D warnings
+          cargo +stable test --workspace --locked
+      - name: Build desktop client
+        run: |
+          cmake -S . -B build/desktop -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/desktop --parallel
+          ctest --test-dir build/desktop --output-on-failure
+
+  switch:
+    runs-on: ubuntu-latest
+    container:
+      image: devkitpro/devkita64:20260219
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust cross compiler
+        shell: bash
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/rustup-init.sh
+          sh /tmp/rustup-init.sh -y --profile minimal --default-toolchain nightly-2026-10-01 --component rust-src
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Build NRO
+        shell: bash
+        run: bash scripts/build-switch.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wodex-switch
+          path: |
+            build/switch/wodex.nro
+            build/switch/wodex.elf
+            build/switch/wodex.map
+          if-no-files-found: error
