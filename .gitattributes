@@ -1,2 +1,3 @@
 external/** -whitespace
+licenses/** -whitespace -text
 romfs/fonts/*.otf binary

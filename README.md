@@ -1,5 +1,7 @@
 # Wodex
 
+[![Build and test](https://github.com/old-new-things/wodex/actions/workflows/build.yml/badge.svg)](https://github.com/old-new-things/wodex/actions/workflows/build.yml)
+
 A native DeepSeek chat client for Nintendo Switch homebrew, with a desktop build for development. Inspired by wiliwili's controller navigation and readable handheld interface.
 
 The app streams replies, saves conversations, supports thinking mode, includes a Chinese-capable font, and uses the Switch system keyboard. It also checks for verified releases and can replace its Switch NRO on exit. A real ARM64 `.nro` has been cross-compiled and linked. Physical Switch testing and a live request with your own DeepSeek key are still required.
@@ -8,7 +10,7 @@ The app streams replies, saves conversations, supports thinking mode, includes a
 
 ## Use on Switch
 
-1. Copy `build/switch/wodex.nro` to `sdmc:/switch/wodex/wodex.nro`.
+1. Download `wodex.nro` from a [release](https://github.com/old-new-things/wodex/releases), or extract the `wodex-switch` artifact from a successful [CI run](https://github.com/old-new-things/wodex/actions/workflows/build.yml). Copy it to `sdmc:/switch/wodex/wodex.nro`. Local builds produce `build/switch/wodex.nro`.
 2. Launch hbmenu with full application memory through your homebrew environment. For a typical title-override setup, hold **R** while launching a game, then select Wodex.
 3. Open **Settings**, enter your [DeepSeek API key](https://platform.deepseek.com/), and return to chat.
 4. Press **X** to write, confirm the keyboard, then select **Send**.
@@ -75,7 +77,7 @@ bash scripts/build-switch.sh
 
 Required SDK packages: `switch-dev`, `switch-sdl2`, `switch-sdl2_ttf`, `switch-curl`, and `switch-pkg-config`. Output: `build/switch/wodex.nro`.
 
-The verified SDK image is `devkitpro/devkita64:20260219`. [Architecture and build details](docs/architecture.md) include the exact two-stage commands used to build the NRO on a host with Rust and a container engine. GitHub Actions is configured to build both targets and upload the Switch artifact after the project is pushed to GitHub.
+The verified SDK image is `devkitpro/devkita64:20260219`. [Architecture and build details](docs/architecture.md) include the exact two-stage commands used to build the NRO on a host with Rust and a container engine. [GitHub Actions](https://github.com/old-new-things/wodex/actions/workflows/build.yml) checks Rust formatting, lints and tests, builds and tests the desktop client, builds the Switch NRO, and exercises update installation using that NRO. Successful runs provide a `wodex-switch` artifact with the NRO, checksum and license notices. CI artifacts require a GitHub login to download; published release assets are public downloads.
 
 ## Data and behavior
 
@@ -98,7 +100,7 @@ SDL_ttf/FreeType reads UTF-8 text using the font's stream API; Wodex does not ma
 
 ## Self-updates
 
-Open **Settings → Updates**, set a public GitHub `owner/repo` release source, then choose **Check for updates**, **Download**, and **Install and exit**. The release source is unset by default; configure it after choosing where to publish releases. Checks are manual. Desktop builds can check release metadata; self-installation is supported on Switch.
+Open **Settings → Updates**, set the release source to `old-new-things/wodex`, then choose **Check for updates**, **Download**, and **Install and exit**. The release source is unset by default. Checks are manual and require a newer published stable release; CI artifacts are available for manual installation. Desktop builds can check release metadata; self-installation is supported on Switch.
 
 Wodex downloads a newer stable `wodex.nro` to a sibling temporary file and verifies the release's advertised size, SHA-256, executable headers and embedded assets. Installing saves conversations, closes the interface and embedded resources, preserves a launchable `.previous.nro`, and replaces the actual NRO path supplied by the loader. Reopen Wodex from hbmenu afterward. A normal exit never installs a downloaded update.
 

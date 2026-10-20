@@ -19,7 +19,8 @@ concurrency:
 
 jobs:
   validate:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
       commit: ${{ steps.source.outputs.commit }}
@@ -41,10 +42,11 @@ jobs:
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
             output.write(f'tag={tag}\n')
           PY
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: refs/tags/${{ steps.tag.outputs.tag }}
           fetch-depth: 0
+          persist-credentials: false
       - name: Validate tagged source version
         id: source
         env:
@@ -73,11 +75,12 @@ jobs:
 
   publish:
     needs: [validate, build]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: wodex-switch
           path: release
@@ -109,7 +112,11 @@ jobs:
           digest = hashlib.sha256(binary).hexdigest()
           if (root / 'wodex.nro.sha256').read_text().split() != [digest, 'wodex.nro']:
             raise SystemExit('The artifact checksum does not match wodex.nro.')
+          license_digest = hashlib.sha256((root / 'licenses.tar.gz').read_bytes()).hexdigest()
+          if (root / 'licenses.tar.gz.sha256').read_text().split() != [license_digest, 'licenses.tar.gz']:
+            raise SystemExit('The license bundle checksum does not match licenses.tar.gz.')
           asset_names = ['wodex.nro', 'wodex.nro.sha256', 'LICENSE', 'THIRD_PARTY.md',
+                         'licenses.tar.gz', 'licenses.tar.gz.sha256',
                          'NotoSansCJK-OFL.txt', 'NotoSansCJK-README.md']
           for name in asset_names:
             if not (root / name).is_file() or (root / name).stat().st_size == 0:
@@ -127,7 +134,7 @@ jobs:
             'Install wodex.nro manually, or use Settings → Updates in Wodex. '
             'The update asset keeps the name wodex.nro. Restart from hbmenu after installation.\n\n'
             'The NRO includes the Noto Sans CJK font, its license and attribution. '
-            'Additional source and license notices are attached.\n')
+            'License notices for linked libraries are attached in licenses.tar.gz.\n')
           # Keep the release hidden from clients until every uploaded byte is verified.
           gh('release', 'create', tag, '--repo', repository, '--verify-tag',
              '--draft', '--prerelease=false', '--latest=false', '--title', f'Wodex {tag}',

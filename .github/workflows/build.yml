@@ -15,56 +15,80 @@ on:
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   desktop:
-    runs-on: ubuntu-latest
+    name: Rust and desktop tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      RUSTUP_TOOLCHAIN: 1.99.0
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
       - name: Install native dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build pkg-config libsdl2-dev libsdl2-ttf-dev libcurl4-openssl-dev fonts-dejavu-core
       - name: Install Rust
-        run: rustup toolchain install stable --profile minimal --component rustfmt,clippy
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rustfmt,clippy
       - name: Check Rust
         run: |
-          cargo +stable fmt --all -- --check
-          cargo +stable clippy --workspace --all-targets --locked -- -D warnings
-          cargo +stable test --workspace --locked
+          cargo fmt --all -- --check
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          cargo test --workspace --locked
       - name: Build desktop client
         run: |
-          cmake -S . -B build/desktop -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake -S . -B build/desktop -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
           cmake --build build/desktop --parallel
-          ctest --test-dir build/desktop --output-on-failure
+      - name: Run all desktop integration suites
+        run: ctest --test-dir build/desktop --output-on-failure --timeout 120
+      - name: Save updater harness for packaged-NRO tests
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: wodex-updater-harness
+          path: build/desktop/wodex_update_tests
+          if-no-files-found: error
+          retention-days: 1
 
   switch:
-    runs-on: ubuntu-latest
+    name: Switch no_std build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     container:
       image: devkitpro/devkita64:20260219
+    env:
+      WODEX_RUST_TOOLCHAIN: nightly-2026-10-01
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
       - name: Install pinned Rust cross compiler
-        shell: bash
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/rustup-init.sh
-          sh /tmp/rustup-init.sh -y --profile minimal --default-toolchain nightly-2026-10-01 --component rust-src
+          sh /tmp/rustup-init.sh -y --profile minimal --default-toolchain "$WODEX_RUST_TOOLCHAIN" --component rust-src
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       - name: Build NRO
-        shell: bash
         run: bash scripts/build-switch.sh
       - name: Prepare portable update assets
-        shell: bash
         run: |
           cp VERSION LICENSE THIRD_PARTY.md build/switch/
           cp romfs/fonts/OFL.txt build/switch/NotoSansCJK-OFL.txt
           cp romfs/fonts/README.md build/switch/NotoSansCJK-README.md
+          tar --owner=0 --group=0 --numeric-owner -czf build/switch/licenses.tar.gz licenses
           cd build/switch
           sha256sum wodex.nro > wodex.nro.sha256
-      - uses: actions/upload-artifact@v4
+          sha256sum licenses.tar.gz > licenses.tar.gz.sha256
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: wodex-switch
           path: |
@@ -73,8 +97,39 @@ jobs:
             build/switch/VERSION
             build/switch/LICENSE
             build/switch/THIRD_PARTY.md
+            build/switch/licenses.tar.gz
+            build/switch/licenses.tar.gz.sha256
             build/switch/NotoSansCJK-OFL.txt
             build/switch/NotoSansCJK-README.md
             build/switch/wodex.elf
             build/switch/wodex.map
           if-no-files-found: error
+          retention-days: 14
+
+  packaged_update:
+    name: Packaged NRO update tests
+    needs: [desktop, switch]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+      - name: Install harness runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsdl2-2.0-0 libsdl2-ttf-2.0-0 libcurl4t64
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: wodex-updater-harness
+          path: build/desktop
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: wodex-switch
+          path: build/switch
+      - name: Verify download, validation, installation, and rollback using the built NRO
+        run: |
+          chmod +x build/desktop/wodex_update_tests
+          (cd build/switch && sha256sum --check wodex.nro.sha256 licenses.tar.gz.sha256)
+          python3 tests/mock_updates.py build/desktop/wodex_update_tests build/switch/wodex.nro

@@ -78,6 +78,6 @@ Outputs are `build/switch/wodex.nro`, `wodex.elf`, `wodex.nacp`, `wodex.map` and
 
 ## Verification boundary
 
-The Rust Switch-target archive and complete native NRO have been built with the toolchain above. Native integration tests use a local mock API to exercise the transport and persistence without a paid API key. GitHub Actions repeats Rust checks, the desktop build and the Switch NRO build. CI has been configured locally; it runs after the repository is pushed to GitHub.
+The Rust Switch-target archive and complete native NRO have been built with the toolchain above. Native integration tests use a local mock API to exercise the transport and persistence without a paid API key. [GitHub Actions](https://github.com/old-new-things/wodex/actions/workflows/build.yml) repeats Rust checks, the desktop build and the Switch NRO build on pushes and pull requests. Stable release tags reuse the build workflow before publishing verified assets.
 
 Execution on physical Switch hardware remains necessary to verify graphics performance, bundled-font rendering, the software keyboard and networking under the device's firmware and homebrew launch mode. The generated NRO is a build-verified artifact, not evidence of a completed hardware test.

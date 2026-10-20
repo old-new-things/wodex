@@ -1,6 +1,6 @@
 # Updates
 
-Wodex supports manually requested updates from a public GitHub repository. No release repository is configured by default. Enter an `owner/repo` value in Settings after choosing the repository that will publish trusted Wodex builds. Wodex does not need a GitHub token or an account login.
+Wodex supports manually requested updates from a public GitHub repository. No release repository is configured by default. Enter `old-new-things/wodex` in Settings to use this project's [published releases](https://github.com/old-new-things/wodex/releases). The first update check requires a published stable release; CI artifacts can be installed manually. Wodex does not need a GitHub token or an account login.
 
 ## Install an update
 
@@ -25,9 +25,14 @@ If downloading, digest validation or staging fails, the installed application is
 
 `VERSION` is the canonical application version. Both the desktop version string and Switch NACP metadata are built from it. It must contain one stable `X.Y.Z` version of at most 15 ASCII characters, without leading zeroes in a component. Stable publishing tags use `v` followed by that exact version, such as `v0.2.0` for a `VERSION` file containing `0.2.0`.
 
-The repository includes a stable-release workflow for a future public GitHub remote. It runs when a `v*` tag is pushed or when **Publish stable Switch release** is manually dispatched with an existing tag. Creating this workflow does not create a remote repository, push a tag or publish a release locally.
+The [stable-release workflow](https://github.com/old-new-things/wodex/actions/workflows/release.yml) runs when a `v*` tag is pushed or when **Publish stable Switch release** is manually dispatched with an existing tag. Ordinary branch pushes run CI and upload build artifacts. To publish the version recorded in `VERSION`, commit its changes to `main`, push `main`, then create and push the matching tag:
 
-The workflow validates the strict stable tag against the tagged `VERSION`, runs the native and Rust checks, and builds with `devkitpro/devkita64:20260219` and Rust `nightly-2026-10-01`. It uploads `wodex.nro`, `wodex.nro.sha256`, the application license, third-party notices and Noto font license/attribution. The font and its notices also remain embedded in the NRO.
+```sh
+git tag "v$(cat VERSION)"
+git push origin "v$(cat VERSION)"
+```
+
+The workflow validates the strict stable tag against the tagged `VERSION`, runs the native and Rust checks, builds with `devkitpro/devkita64:20260219` and Rust `nightly-2026-10-01`, and tests update installation with the packaged NRO. It uploads `wodex.nro`, `wodex.nro.sha256`, the application license, third-party notices, a checksummed `licenses.tar.gz` bundle, and Noto font license/attribution. The font and its notices also remain embedded in the NRO.
 
 Merge workflow changes into the repository's default branch before tagging a release that contains them. GitHub's default Actions token cannot publish a commit whose workflow files differ from the default branch without additional workflow permissions.
 
