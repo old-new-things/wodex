@@ -15,7 +15,7 @@ cargo run --locked -p wodex-publish-pages -- \
 ```
 
 Pass `--previous-dir /previous-site-directory` when restoring the most recent
-successful publication snapshot. The output directory must not exist, and its
+accepted deployment snapshot. The workflow separately verifies public delivery before reporting success or pruning recovery artifacts. The output directory must not exist, and its
 parent must exist. Paths may be relative or absolute and must not use symbolic
 links or `..`. For explicit versions use `--channel version --tag vX.Y.Z`;
 the tag must match the artifact's `VERSION`. Timestamps use the source workflow

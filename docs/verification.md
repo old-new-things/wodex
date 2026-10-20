@@ -14,7 +14,8 @@ Local verification completed on 2026-10-20.
 | Headless chat and update-page rendering smoke tests | Passed; migrated demo is pixel-identical to the previous preview |
 | Update download/install integration | 213 mock checks passed; 215 with the actual packaged NRO |
 | Rust Pages publisher integrity, retention and immutability tests | 10 passed |
-| Publication-state restoration and archive-extraction tests | 8 passed |
+| Publication-state source validation, restoration and archive-extraction tests | 23 passed |
+| Live-publication verification, stale content, integrity and deadline tests | 10 passed |
 | Pages workflow syntax and local publication simulation | Passed |
 | Developer home/project paths removed from Switch NRO | Passed; neutral compiler paths verified |
 | Desktop resource discovery from a different working directory | Passed |
@@ -36,4 +37,4 @@ Backend fault-injection tests cover interrupted/short writes, byte-exact corrupt
 
 Update tests additionally cover redirect rejection, exact Pages project/version URL binding, mixed-case repository paths, no chat-credential leakage, version-feed schema/digest/size requirements, cancellation cleanup, checksum/size mismatch, NRO/ASET/RomFS bounds and missing assets, tampered stages, actual packaged-NRO replacement in a temporary folder, retained backups, failed installation rollback and failed-rollback recovery. Desktop CTest passes all seven suites. The update repository remains unset by default as requested. The version feed is published on GitHub Pages; nightlies remain manual downloads.
 
-Physical Switch graphics, controls, keyboard, SD filesystem, self-replacement and live provider HTTPS behavior have not been exercised on hardware. No live DeepSeek API key was used, and no API credits were spent. Remote build results and downloadable artifacts are recorded in [GitHub Actions](https://github.com/old-new-things/wodex/actions/workflows/build.yml); the table above records the local verification.
+Physical Switch graphics, controls, keyboard, SD filesystem, self-replacement and live provider HTTPS behavior have not been exercised on hardware. No live DeepSeek API key was used, and no API credits were spent. Remote build results and downloadable artifacts are recorded in [GitHub Actions](https://github.com/old-new-things/wodex/actions/workflows/build.yml); the table above records the local verification. The separate [publication workflow](https://github.com/old-new-things/wodex/actions/workflows/publish.yml) verifies the served page, catalog, feed and newest channel downloads before reporting success.

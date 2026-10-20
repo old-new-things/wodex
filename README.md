@@ -79,7 +79,7 @@ Required SDK packages: `switch-dev`, `switch-sdl2`, `switch-sdl2_ttf`, `switch-c
 
 The verified SDK image is `devkitpro/devkita64:20260219`. [Architecture and build details](docs/architecture.md) include the exact two-stage commands used to build the NRO on a host with Rust and a container engine. [GitHub Actions](https://github.com/old-new-things/wodex/actions/workflows/build.yml) checks Rust formatting, lints and tests, builds and tests the desktop client, builds the Switch NRO, and exercises update installation using that NRO.
 
-Successful `main` builds publish timestamped nightlies to [GitHub Pages](https://old-new-things.github.io/wodex/), also scheduled daily at 00:17 UTC. Explicit `vX.Y.Z` tags publish fixed version downloads after the same checks. The site retains up to seven nightlies and ten versions, with public downloads, checksums and license notices; no GitHub login is needed. GitHub Releases are not used. Other branches and pull requests produce CI artifacts without publishing the site.
+Successful `main` builds publish timestamped nightlies to [GitHub Pages](https://old-new-things.github.io/wodex/), also scheduled daily at 00:17 UTC. Explicit `vX.Y.Z` tags publish fixed version downloads after the same checks. The site retains up to seven nightlies and ten versions, with public downloads, checksums and license notices; no GitHub login is needed. GitHub Releases are not used. Other branches and pull requests produce CI artifacts without publishing the site. A separate [publication workflow](https://github.com/old-new-things/wodex/actions/workflows/publish.yml) verifies the live downloads before reporting publication success.
 
 ## Data and behavior
 
@@ -114,7 +114,7 @@ The SD-card replacement uses two renames, so power interruption can require rest
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
-python3 -m unittest discover -s tests -p 'test_pages_state.py'
+python3 -m unittest discover -s tests -p 'test_*pages*.py'
 cmake --build build/desktop --parallel
 ctest --test-dir build/desktop --output-on-failure
 ```

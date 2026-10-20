@@ -45,7 +45,7 @@ TLS and SHA-256 protect transfer integrity relative to the selected feed. The re
 
 ## Publish nightly and version builds
 
-The [build workflow](https://github.com/old-new-things/wodex/actions/workflows/build.yml) runs Rust checks, all desktop integration suites, the Switch build and updater tests using the packaged NRO before publication. The Switch build uses `devkitpro/devkita64:20260219` and Rust `nightly-2026-10-01`.
+The [build workflow](https://github.com/old-new-things/wodex/actions/workflows/build.yml) runs Rust checks, all desktop integration suites, the Switch build and updater tests using the packaged NRO. It then dispatches the [publication workflow](https://github.com/old-new-things/wodex/actions/workflows/publish.yml) on `main`, passing the successful source run and attempt. Publication validates that source before downloading its artifact. The Switch build uses `devkitpro/devkita64:20260219` and Rust `nightly-2026-10-01`.
 
 Successful `main` pushes publish nightlies. A daily run at **00:17 UTC** and manual runs on `main` use the same checks and channel. Nightly paths contain the UTC workflow-attempt timestamp and abbreviated source commit, for example `builds/nightly/20261020T001700Z-0123456/`. Other branches and pull requests upload CI artifacts without changing the download site.
 
@@ -64,11 +64,15 @@ Each build includes `wodex.nro`, its checksum, `VERSION`, the application licens
 
 ## Publication state and recovery
 
-Publication is serialized so each job restores the last successfully deployed Pages snapshot before adding its build. The host Rust publisher verifies the restored catalog and every retained file, generates the complete replacement site, and uploads it for deployment. The publisher is a separate `std` tool; the Switch application remains `no_std` plus `alloc`.
+Publication is serialized so each job restores the last accepted Pages deployment snapshot before adding its build. The host Rust publisher verifies the restored catalog and every retained file, generates the complete replacement site, and uploads it for deployment. The publisher is a separate `std` tool; the Switch application remains `no_std` plus `alloc`.
 
 The site retains up to seven newest nightlies and ten highest versions. A 450 MiB download budget may remove additional older builds while preserving the newest build in each channel. Version digest records survive pruning.
 
-Recovery snapshots are stored as attempt-specific Actions artifacts. After a successful deployment, cleanup keeps the current and preceding snapshots, each with 90-day retention; successful daily publications refresh this history. Restoration accepts only snapshots from this repository's authorized build workflow with a successful Pages deployment step. A later cleanup failure does not invalidate an otherwise successful deployment.
+Recovery snapshots are stored as attempt-specific Actions artifacts. After deployment, the publication workflow checks the live catalog, version feed, page, and newest downloads against its generated files. It retries for up to 11 minutes to allow CDN propagation. Only successful public verification permits cleanup, which keeps the current and preceding snapshots with 90-day retention. Successful daily publications refresh this history.
+
+Restoration accepts only snapshots from this repository's authorized publication workflow with a successful Pages deployment step, plus a fixed allowlist of the initial migration snapshots. If later public verification fails, the accepted snapshot is still retained as publication intent: the next run preserves its version locks and downloads instead of dropping a potentially deployed version. A failed verification marks the workflow unsuccessful and leaves recovery artifacts intact.
+
+The publication workflow always runs through `workflow_dispatch` on `main`, including for tag builds. This avoids a [reported Pages issue with repeated commit IDs on tag/release deployments](https://github.com/actions/deploy-pages/issues/383). The source commit and channel in the catalog still describe the actual tested build. A green build workflow means its tests and dispatch succeeded; check the publication workflow for the public download result.
 
 If the latest deployed snapshot has expired, restoration fails. If no trusted snapshot exists but a live catalog does, publication also fails instead of resetting the site and losing its history or version locks. Recover the complete snapshot from a trusted backup and reconcile it with the live catalog before resuming publication. Do not remove the live catalog to bypass this guard. Existing public downloads remain available while publication is stopped.
 
