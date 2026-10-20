@@ -1,4 +1,5 @@
 use super::*;
+use crate::backend::images::ImageResult;
 use crate::state::MessageStatus;
 use alloc::{collections::VecDeque, vec};
 
@@ -23,6 +24,10 @@ struct MockHost {
   system_keyboard: bool,
   edited: Option<String>,
   text_input: bool,
+  image_requests: Vec<String>,
+  image_results: VecDeque<ImageResult>,
+  image_active: bool,
+  image_cancellations: usize,
 }
 
 impl Host for MockHost {
@@ -74,6 +79,25 @@ impl Host for MockHost {
     }
     event
   }
+  fn request_image(&mut self, url: &str) -> bool {
+    if self.image_active {
+      return false;
+    }
+    self.image_requests.push(url.into());
+    self.image_active = true;
+    true
+  }
+  fn poll_image(&mut self) -> Option<ImageResult> {
+    let result = self.image_results.pop_front();
+    if result.is_some() {
+      self.image_active = false;
+    }
+    result
+  }
+  fn cancel_images(&mut self) {
+    // Production cancellation keeps the worker occupied until it reports back.
+    self.image_cancellations += 1;
+  }
   fn update_status(&self) -> UpdateStatus {
     self.update.clone()
   }
@@ -120,6 +144,114 @@ fn app() -> App<MockHost> {
 
 fn last_saved(app: &App<MockHost>) -> Value {
   serde_json::from_str(app.host.writes.last().unwrap()).unwrap()
+}
+
+fn image_app(content: &str) -> App<MockHost> {
+  let mut app = app();
+  app.core.execute(Command::Send { content: "Show an image.".into() }).unwrap();
+  let event = serde_json::json!({"choices": [{"delta": {"content": content}}]});
+  app.core.feed(format!("data: {event}\n\n").as_bytes());
+  app.core.execute(Command::Finish { http_status: Some(200), error: None }).unwrap();
+  app
+}
+
+#[test]
+fn image_requests_follow_visible_cards_and_completed_results_are_cached() {
+  use crate::backend::images::DecodedImage;
+  let url = "https://example.org/image.png";
+  let source = format!("![图片]({url})");
+  let mut app = image_app(&source);
+  let (_backend, mut canvas) = canvas::test_backend::canvas();
+  app.render(&mut canvas).unwrap();
+  app.render(&mut canvas).unwrap();
+  assert_eq!(app.host.image_requests, vec![url]);
+  app.host.image_results.push_back(ImageResult {
+    url: url.into(),
+    result: Ok(DecodedImage { width: 1, height: 1, rgba: vec![255, 0, 0, 255] }),
+  });
+  app.render(&mut canvas).unwrap();
+  app.render(&mut canvas).unwrap();
+  assert_eq!(app.host.image_requests, vec![url]);
+  assert_eq!(app.core.state().conversations[0].messages[1].content, source);
+  let cancellations = app.host.image_cancellations;
+  app.dispatch(Action::NewChat);
+  app.render(&mut canvas).unwrap();
+  assert!(app.host.image_cancellations > cancellations);
+}
+
+#[test]
+fn offline_images_demo_and_update_transfers_do_not_start_image_downloads() {
+  let mut app = image_app("![image](https://example.org/image.png)");
+  let (_backend, mut canvas) = canvas::test_backend::canvas();
+  app.set_image_loading(false);
+  app.render(&mut canvas).unwrap();
+  assert!(app.host.image_requests.is_empty());
+  app.set_image_loading(true);
+  app.demo = true;
+  app.render(&mut canvas).unwrap();
+  assert!(app.host.image_requests.is_empty());
+  app.demo = false;
+  app.host.update.phase = UpdatePhase::Downloading;
+  app.render(&mut canvas).unwrap();
+  assert!(app.host.image_requests.is_empty());
+  app.host.update.phase = UpdatePhase::Idle;
+  app.render(&mut canvas).unwrap();
+  assert_eq!(app.host.image_requests.len(), 1);
+  let cancellations = app.host.image_cancellations;
+  app.close();
+  assert!(app.host.image_cancellations > cancellations);
+}
+
+#[test]
+fn failed_images_are_not_retried_each_frame_and_hidden_images_stay_idle() {
+  let url = "https://example.org/image.png";
+  let mut app = image_app(&format!("![image]({url})\n\n{}", "visible text\n".repeat(40)));
+  let (_backend, mut canvas) = canvas::test_backend::canvas();
+  app.render(&mut canvas).unwrap();
+  assert!(app.host.image_requests.is_empty());
+  app.ui.follow_bottom = false;
+  app.ui.scroll = 0;
+  app.render(&mut canvas).unwrap();
+  assert_eq!(app.host.image_requests, vec![url]);
+  app
+    .host
+    .image_results
+    .push_back(ImageResult { url: url.into(), result: Err("Image is unavailable.".into()) });
+  app.render(&mut canvas).unwrap();
+  app.render(&mut canvas).unwrap();
+  assert_eq!(app.host.image_requests, vec![url]);
+}
+
+#[test]
+fn cancelled_image_from_another_chat_cannot_supply_pixels_for_the_same_url() {
+  use crate::backend::images::DecodedImage;
+  let url = "https://example.org/image.png";
+  let source = format!("![image]({url})");
+  let mut app = image_app(&source);
+  let (backend, mut canvas) = canvas::test_backend::canvas();
+  app.render(&mut canvas).unwrap();
+  assert_eq!(app.host.image_requests, vec![url]);
+  app.dispatch(Action::NewChat);
+  app.core.execute(Command::Send { content: "Show the image again.".into() }).unwrap();
+  let event = serde_json::json!({"choices": [{"delta": {"content": source}}]});
+  app.core.feed(format!("data: {event}\n\n").as_bytes());
+  app.core.execute(Command::Finish { http_status: Some(200), error: None }).unwrap();
+  app.render(&mut canvas).unwrap();
+  assert_eq!(app.host.image_requests, vec![url], "the cancelled worker still owns its slot");
+  // Even a success racing with cancellation must be discarded by the new chat.
+  app.host.image_results.push_back(ImageResult {
+    url: url.into(),
+    result: Ok(DecodedImage { width: 1, height: 1, rgba: vec![255, 0, 0, 255] }),
+  });
+  app.render(&mut canvas).unwrap();
+  assert!(backend.image_uploads.is_empty(), "stale pixels must never reach SDL");
+  assert_eq!(app.host.image_requests, vec![url, url]);
+  app.host.image_results.push_back(ImageResult {
+    url: url.into(),
+    result: Ok(DecodedImage { width: 1, height: 1, rgba: vec![0, 255, 0, 255] }),
+  });
+  app.render(&mut canvas).unwrap();
+  assert_eq!(backend.image_uploads, vec![(1, 1)]);
 }
 
 fn set_repository(app: &mut App<MockHost>, repository: &str) {

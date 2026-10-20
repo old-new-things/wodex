@@ -1,7 +1,7 @@
 //! CommonMark/GFM converted into a flat, bounded native drawing model.
 //!
-//! The parser has no HTML renderer or I/O features. URLs and image descriptions
-//! are text only. Excessive structure falls back to the complete original text,
+//! The parser has no HTML renderer or I/O features. Image references are retained
+//! for the native view. Excessive structure falls back to the complete original text,
 //! so a streamed or unusual answer remains readable without recursive layout.
 use alloc::{
   format,
@@ -18,6 +18,8 @@ const MAX_SPANS: usize = 8192;
 const MAX_EVENTS: usize = 65536;
 const MAX_TABLE_COLUMNS: usize = 32;
 const MAX_TABLE_CELLS: usize = 4096;
+const MAX_IMAGES: usize = 128;
+const MAX_IMAGE_URL: usize = 4096;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Style {
@@ -29,9 +31,16 @@ pub struct Style {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ImageRef {
+  pub url: String,
+  pub alt: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Span {
   pub text: String,
   pub style: Style,
+  pub image: Option<ImageRef>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -107,7 +116,11 @@ fn plain(source: &str) -> Document {
       indent: 0,
       quote_depth: 0,
       marker: None,
-      kind: BlockKind::Paragraph(vec![Span { text: source.into(), style: Style::default() }]),
+      kind: BlockKind::Paragraph(vec![Span {
+        text: source.into(),
+        style: Style::default(),
+        image: None,
+      }]),
     }],
   }
 }
@@ -139,6 +152,7 @@ struct Builder {
   italic: usize,
   strike: usize,
   spans: usize,
+  images: usize,
   bytes: usize,
   max_bytes: usize,
 }
@@ -158,6 +172,7 @@ impl Builder {
       italic: 0,
       strike: 0,
       spans: 0,
+      images: 0,
       bytes: 0,
       max_bytes: source_bytes.saturating_mul(4).saturating_add(4096),
     }
@@ -167,6 +182,7 @@ impl Builder {
     self.depth <= MAX_DEPTH
       && self.document.blocks.len() < MAX_BLOCKS
       && self.spans <= MAX_SPANS
+      && self.images <= MAX_IMAGES
       && self.bytes <= self.max_bytes
       && self.table.as_ref().is_none_or(|table| table.cells <= MAX_TABLE_CELLS)
   }
@@ -214,10 +230,18 @@ impl Builder {
     for link in &mut self.links {
       link.label.push_str(text);
     }
+    // CommonMark image children form alternative text, never nested drawings.
+    if self.links.iter().any(|link| link.image) {
+      return;
+    }
     if let Some(Block { kind: BlockKind::Code { text: code, .. }, .. }) = &mut self.pending {
       code.push_str(text);
       return;
     }
+    self.append_span(Span { text: text.into(), style, image: None });
+  }
+
+  fn append_span(&mut self, span: Span) {
     if self.table.is_none() && self.pending.is_none() {
       self.begin(BlockKind::Paragraph(Vec::new()));
     }
@@ -229,12 +253,37 @@ impl Builder {
         _ => return,
       }
     };
-    if let Some(last) = spans.last_mut().filter(|last| last.style == style) {
-      last.text.push_str(text);
+    if let Some(last) = spans
+      .last_mut()
+      .filter(|last| last.style == span.style && last.image.is_none() && span.image.is_none())
+    {
+      last.text.push_str(&span.text);
     } else {
-      spans.push(Span { text: text.into(), style });
+      spans.push(span);
       self.spans += 1;
     }
+  }
+
+  fn image(&mut self, link: Link) {
+    if self.links.iter().any(|link| link.image) {
+      return;
+    }
+    let alt = if link.label.is_empty() { String::from("Image") } else { link.label };
+    let text = format!("[Image: {alt}] ({})", link.destination);
+    // Count both fallback text and the retained reference, including references
+    // reused many times in a small message.
+    self.bytes = self
+      .bytes
+      .saturating_add(text.len())
+      .saturating_add(alt.len())
+      .saturating_add(link.destination.len());
+    let image = if link.destination.len() <= MAX_IMAGE_URL && !link.destination.is_empty() {
+      self.images += 1;
+      Some(ImageRef { url: link.destination, alt })
+    } else {
+      None
+    };
+    self.append_span(Span { text, style: self.style(), image });
   }
 
   fn event(&mut self, event: Event<'_>) -> bool {
@@ -293,7 +342,6 @@ impl Builder {
             });
           }
           Tag::Image { dest_url, .. } => {
-            self.text("[Image: ", self.style());
             self.links.push(Link {
               destination: dest_url.into_string(),
               label: String::new(),
@@ -352,13 +400,10 @@ impl Builder {
             if let Some(link) = self.links.pop() {
               let style = Style { link: true, ..self.style() };
               if link.image {
-                if link.label.is_empty() {
-                  self.text("image", style);
-                }
-                self.text("]", style);
-              }
-              if !link.destination.is_empty()
-                && (link.image || (!link.autolink && link.label.trim() != link.destination))
+                self.image(link);
+              } else if !link.destination.is_empty()
+                && !link.autolink
+                && link.label.trim() != link.destination
               {
                 self.text(&format!(" ({})", link.destination), style);
               }
@@ -505,17 +550,55 @@ mod tests {
   }
 
   #[test]
-  fn links_references_images_and_html_are_only_readable_text() {
+  fn image_references_preserve_text_fallback_while_links_and_html_remain_literal() {
     let document = parse("[site][s] <https://example.org> ![图](https://example.org/a.png)\n\n[s]: https://example.org\n\n<script>alert(1)</script>");
     assert_eq!(
       text(paragraph(&document.blocks[0])),
       "site (https://example.org) https://example.org [Image: 图] (https://example.org/a.png)"
     );
+    let image = paragraph(&document.blocks[0]).iter().find_map(|span| span.image.as_ref()).unwrap();
+    assert_eq!(image, &ImageRef { url: "https://example.org/a.png".into(), alt: "图".into() });
     assert_eq!(text(paragraph(&document.blocks[1])), "<script>alert(1)</script>\n");
     assert_eq!(
       text(paragraph(&parse("[run](javascript:alert(1))").blocks[0])),
       "run (javascript:alert(1))"
     );
+  }
+
+  #[test]
+  fn images_keep_order_alt_text_and_nested_container_locations() {
+    let document = parse("before ![**中文** `code`](https://example.org/a.png) after ![](https://example.org/b.jpg)\n\n- [![linked](https://example.org/c.png)](https://example.org/page)\n\n| image |\n| --- |\n| ![cell](https://example.org/d.png) |");
+    let spans = paragraph(&document.blocks[0]);
+    assert_eq!(spans.len(), 4);
+    assert_eq!(spans[0].text, "before ");
+    assert_eq!(spans[1].image.as_ref().unwrap().alt, "中文 code");
+    assert_eq!(spans[2].text, " after ");
+    assert_eq!(spans[3].image.as_ref().unwrap().alt, "Image");
+    assert_eq!(document.blocks[1].marker.as_deref(), Some("•"));
+    let linked = paragraph(&document.blocks[1]);
+    assert_eq!(linked[0].image.as_ref().unwrap().alt, "linked");
+    assert!(linked[1].text.contains("https://example.org/page"));
+    let BlockKind::Table { rows, .. } = &document.blocks[2].kind else {
+      panic!("expected table");
+    };
+    assert_eq!(rows[0][0][0].image.as_ref().unwrap().alt, "cell");
+  }
+
+  #[test]
+  fn partial_code_and_excessive_images_never_become_download_candidates() {
+    for source in [
+      "![图像](https://example.org/partial",
+      "`![code](https://example.org/code.png)`",
+      r"\![escaped](https://example.org/escaped.png)",
+    ] {
+      assert!(paragraph(&parse(source).blocks[0]).iter().all(|span| span.image.is_none()));
+    }
+    let source = "![image](https://example.org/image.png) ".repeat(MAX_IMAGES + 1);
+    let document = parse(&source);
+    assert_eq!(text(paragraph(&document.blocks[0])), source);
+    assert!(paragraph(&document.blocks[0]).iter().all(|span| span.image.is_none()));
+    let oversized = format!("![image](https://example.org/{})", "x".repeat(MAX_IMAGE_URL));
+    assert!(paragraph(&parse(&oversized).blocks[0]).iter().all(|span| span.image.is_none()));
   }
 
   #[test]

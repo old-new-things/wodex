@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "settings": {
+    "api_key": "",
+    "base_url": "https://api.deepseek.com",
+    "model": "deepseek-flash",
+    "thinking": false,
+    "max_tokens": 4096,
+    "system_prompt": "You are a helpful assistant.",
+    "update_repository": "",
+    "update_channel": "version"
+  },
+  "conversations": [
+    {
+      "id": "chat-1",
+      "title": "Markdown · Offline image",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Show image placeholders in offline screenshots.",
+          "reasoning_content": "",
+          "status": "complete"
+        },
+        {
+          "role": "assistant",
+          "content": "![A green leaf / 一片绿叶](https://example.com/leaf.png)\n\nOffline screenshots keep the image card and its alternative text.",
+          "reasoning_content": "",
+          "status": "complete"
+        }
+      ]
+    }
+  ],
+  "active_id": "chat-1",
+  "next_id": 2
+}

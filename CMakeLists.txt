@@ -133,6 +133,14 @@ if(BUILD_TESTING)
   add_test(NAME app_integration COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_SOURCE_DIR}/tests/mock_app.py" "$<TARGET_FILE:wodex_app_tests>" "${WODEX_RESOURCE_DIR}")
   set_tests_properties(app_integration PROPERTIES ENVIRONMENT "SDL_VIDEODRIVER=dummy")
+  add_executable(wodex_image_tests tests/image_tests.cpp)
+  target_include_directories(wodex_image_tests PRIVATE native/include external)
+  target_link_libraries(wodex_image_tests PRIVATE wodex_test_backends)
+  target_compile_options(wodex_image_tests PRIVATE -Wall -Wextra -Wpedantic)
+  add_dependencies(wodex_image_tests wodex_resources)
+  add_test(NAME image_integration COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_SOURCE_DIR}/tests/mock_images.py" "$<TARGET_FILE:wodex_image_tests>" "${WODEX_RESOURCE_DIR}"
+    "${CMAKE_BINARY_DIR}/image-previews")
   add_executable(wodex_host_tests tests/host_tests.cpp)
   target_include_directories(wodex_host_tests PRIVATE native/include)
   target_link_libraries(wodex_host_tests PRIVATE wodex_native)

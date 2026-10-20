@@ -8,6 +8,7 @@ const CACHE_BYTES: usize = 16 * 1024 * 1024;
 const CACHE_ENTRIES: usize = 256;
 const MAX_LAYOUT_LINES: usize = 8192;
 const MAX_LAYOUT_RUNS: usize = 32768;
+const MAX_LAYOUT_IMAGES: usize = 128;
 
 #[derive(Default)]
 pub struct RichTextCache {
@@ -86,6 +87,12 @@ struct Decoration {
   color: Color,
 }
 
+struct ImageCard {
+  area: Rect,
+  url: String,
+  alt: String,
+}
+
 pub struct Layout {
   pub height: i32,
   width: i32,
@@ -95,6 +102,7 @@ pub struct Layout {
   plain: Option<(String, i32)>,
   lines: Vec<Line>,
   decorations: Vec<Decoration>,
+  images: Vec<ImageCard>,
 }
 
 impl Layout {
@@ -112,6 +120,7 @@ impl Layout {
       plain: None,
       lines: Vec::new(),
       decorations: Vec::new(),
+      images: Vec::new(),
     };
     let document = markdown::parse(source);
     for block in document.blocks {
@@ -162,7 +171,7 @@ impl Layout {
             let label = super::canvas::preview(&language, 32);
             result.flow(
               canvas,
-              &[Span { text: label, style: Style { bold: true, ..Style::default() } }],
+              &[Span { text: label, style: Style { bold: true, ..Style::default() }, image: None }],
               x + 12,
               top + 7,
               (available - 24).max(1),
@@ -209,6 +218,7 @@ impl Layout {
       plain: Some((source.into(), size)),
       lines: Vec::new(),
       decorations: Vec::new(),
+      images: Vec::new(),
     }
   }
 
@@ -217,6 +227,8 @@ impl Layout {
       + self.plain.as_ref().map_or(0, |(source, _)| source.capacity())
       + self.lines.capacity() * core::mem::size_of::<Line>()
       + self.decorations.capacity() * core::mem::size_of::<Decoration>()
+      + self.images.capacity() * core::mem::size_of::<ImageCard>()
+      + self.images.iter().map(|image| image.url.capacity() + image.alt.capacity()).sum::<usize>()
       + self
         .lines
         .iter()
@@ -259,7 +271,29 @@ impl Layout {
     let normal_height = canvas.line_height(size, FontStyle::Normal);
     let mut line = Line { y, height: normal_height, runs: Vec::new() };
     let mut used = 0;
+    let mut has_image = false;
     for span in spans {
+      if let Some(image) = &span.image {
+        if self.images.len() >= MAX_LAYOUT_IMAGES {
+          self.overflow = true;
+          return 0;
+        }
+        if !line.runs.is_empty() {
+          let next = line.y.saturating_add(line.height);
+          self.push_line(line);
+          line = Line { y: next, height: normal_height, runs: Vec::new() };
+        }
+        let height = width.saturating_mul(3).saturating_div(4).clamp(72, 240) + 38;
+        self.images.push(ImageCard {
+          area: Rect { x, y: line.y.saturating_add(4), w: width, h: height },
+          url: image.url.clone(),
+          alt: super::canvas::preview(&image.alt, 256),
+        });
+        line.y = line.y.saturating_add(height).saturating_add(12);
+        used = 0;
+        has_image = true;
+        continue;
+      }
       let style = span.style;
       let font = font_style(style);
       let run_size = if style.code { (size - 2).max(12) } else { size };
@@ -376,8 +410,14 @@ impl Layout {
         }
       }
     }
-    let height = line.y.saturating_sub(y).saturating_add(line.height);
-    self.push_line(line);
+    let height = line.y.saturating_sub(y).saturating_add(if has_image && line.runs.is_empty() {
+      0
+    } else {
+      line.height
+    });
+    if !has_image || !line.runs.is_empty() {
+      self.push_line(line);
+    }
     height
   }
 
@@ -471,8 +511,10 @@ impl Layout {
       let labels: Vec<_> = headers.iter().map(|header| short_label(header, 96)).collect();
       // Preserve a long header once. Repeating an unbounded header for every
       // value could otherwise multiply a small source into a huge layout.
-      let long_headers =
-        headers.iter().any(|header| header.iter().map(|span| span.text.len()).sum::<usize>() > 96);
+      let long_headers = headers.iter().any(|header| {
+        header.iter().any(|span| span.image.is_some())
+          || header.iter().map(|span| span.text.len()).sum::<usize>() > 96
+      });
       if long_headers {
         for header in headers {
           top += self.flow(canvas, header, x + 10, top, (width - 20).max(1), table_size) + 6;
@@ -489,7 +531,7 @@ impl Layout {
             span.style.bold = true;
           }
           if !content.is_empty() {
-            content.push(Span { text: ": ".into(), style: Style::default() });
+            content.push(Span { text: ": ".into(), style: Style::default(), image: None });
           }
           content.extend_from_slice(cell);
           top += self.flow(canvas, &content, x + 10, top + 6, (width - 20).max(1), table_size) + 6;
@@ -634,6 +676,13 @@ impl Layout {
         }
       }
     }
+    for image in &self.images {
+      canvas.draw_image(
+        &image.url,
+        &image.alt,
+        Rect { x: x.saturating_add(image.area.x), y: y.saturating_add(image.area.y), ..image.area },
+      );
+    }
     canvas.clip(outer);
   }
 }
@@ -651,11 +700,17 @@ fn short_label(spans: &[Span], limit: usize) -> Vec<Span> {
   let mut remaining = limit;
   let mut result = Vec::new();
   for span in spans {
-    if span.text.len() <= remaining {
-      result.push(span.clone());
-      remaining -= span.text.len();
+    // Stacked tables repeat labels per row; an image belongs in the header once.
+    let text = span.image.as_ref().map_or(span.text.as_str(), |image| image.alt.as_str());
+    if text.len() <= remaining {
+      result.push(Span { text: text.into(), style: span.style, image: None });
+      remaining -= text.len();
     } else {
-      result.push(Span { text: super::canvas::preview(&span.text, remaining), style: span.style });
+      result.push(Span {
+        text: super::canvas::preview(text, remaining),
+        style: span.style,
+        image: None,
+      });
       break;
     }
   }
@@ -719,6 +774,73 @@ mod tests {
   use super::*;
   use crate::app::canvas::{test_backend::canvas, INK};
   use alloc::format;
+
+  #[test]
+  fn inline_images_keep_text_order_and_only_visible_cards_request_pixels() {
+    let (_backend, mut canvas) = canvas();
+    let source = "before ![A cat 中文](https://example.test/cat.png) after\n\n\
+      ![Second](https://example.test/second.png)";
+    let layout = Layout::build(&mut canvas, source, 20, 300);
+    assert_eq!(layout.images.len(), 2);
+    assert!(canvas.take_image_requests().is_empty());
+    let before = layout
+      .lines
+      .iter()
+      .find(|line| line.runs.iter().any(|run| run.text.contains("before")))
+      .unwrap();
+    let after = layout
+      .lines
+      .iter()
+      .find(|line| line.runs.iter().any(|run| run.text.contains("after")))
+      .unwrap();
+    assert!(before.y + before.height <= layout.images[0].area.y);
+    assert!(after.y >= layout.images[0].area.y + layout.images[0].area.h);
+    assert!(layout.images[1].area.y > after.y);
+    canvas.clip(Rect { x: 0, y: 0, w: 300, h: 100 });
+    canvas.begin_image_frame();
+    layout.draw(&mut canvas, 0, 0, INK);
+    assert_eq!(canvas.take_image_requests(), ["https://example.test/cat.png"]);
+    canvas.clip(Rect { x: 0, y: layout.images[1].area.y, w: 300, h: 100 });
+    canvas.begin_image_frame();
+    layout.draw(&mut canvas, 0, 0, INK);
+    assert_eq!(canvas.take_image_requests(), ["https://example.test/second.png"]);
+    assert_eq!(layout.images[0].alt, "A cat 中文");
+  }
+
+  #[test]
+  fn images_fit_table_cells_and_stacked_headers_are_rendered_once() {
+    let (_backend, mut canvas) = canvas();
+    let source = "| ![Header](https://example.test/header.png) | Other |\n\
+      | --- | --- |\n\
+      | ![Body](https://example.test/body.png) | words |\n\
+      | next | value |";
+    let wide = Layout::build(&mut canvas, source, 20, 500);
+    assert_eq!(wide.images.len(), 2);
+    assert!(wide.images.iter().all(|image| image.area.w == 234));
+    assert!(wide.images[1].area.y >= wide.images[0].area.y + wide.images[0].area.h);
+    let narrow = Layout::build(&mut canvas, source, 20, 220);
+    assert_eq!(narrow.images.len(), 2);
+    assert_eq!(narrow.images.iter().filter(|image| image.alt == "Header").count(), 1);
+    assert!(narrow.images.iter().all(|image| image.area.w <= 200));
+    assert!(narrow.height < 1500);
+  }
+
+  #[test]
+  fn image_layout_limits_and_disabled_loading_remain_bounded() {
+    let (_backend, mut canvas) = canvas();
+    let source = "![cat](https://example.test/cat.png)\n\n".repeat(MAX_LAYOUT_IMAGES);
+    let layout = Layout::build(&mut canvas, &source, 20, 1);
+    assert_eq!(layout.images.len(), MAX_LAYOUT_IMAGES);
+    assert!(layout.height < MAX_LAYOUT_IMAGES as i32 * 150);
+    assert!(layout.bytes() < 128 * 1024);
+    canvas.set_image_loading(false);
+    canvas.begin_image_frame();
+    layout.draw(&mut canvas, 0, 0, INK);
+    assert!(canvas.take_image_requests().is_empty());
+    let too_many =
+      Layout::build(&mut canvas, &(source + "![extra](https://example.test/x.png)"), 20, 300);
+    assert!(too_many.images.is_empty());
+  }
 
   #[test]
   fn styles_and_cjk_wrap_inside_the_available_width() {

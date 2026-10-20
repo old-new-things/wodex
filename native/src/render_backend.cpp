@@ -69,6 +69,24 @@ void *texture_create(void *renderer, void *font, const char *value, WodexColor c
 
 void texture_destroy(void *texture) { SDL_DestroyTexture(static_cast<SDL_Texture *>(texture)); }
 
+void *image_texture_create(void *renderer, const uint8_t *pixels, uint32_t width, uint32_t height) {
+  if (!pixels || width == 0 || height == 0 || width > INT32_MAX / 4 || height > INT32_MAX) {
+    SDL_SetError("Invalid image dimensions.");
+    return nullptr;
+  }
+  auto *texture = SDL_CreateTexture(static_cast<SDL_Renderer *>(renderer), SDL_PIXELFORMAT_RGBA32,
+                                    SDL_TEXTUREACCESS_STATIC, static_cast<int>(width),
+                                    static_cast<int>(height));
+  if (!texture) return nullptr;
+  if (SDL_UpdateTexture(texture, nullptr, pixels, static_cast<int>(width * 4)) != 0
+      || SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND) != 0
+      || SDL_SetTextureScaleMode(texture, SDL_ScaleModeLinear) != 0) {
+    SDL_DestroyTexture(texture);
+    return nullptr;
+  }
+  return texture;
+}
+
 int32_t set_color(void *renderer, WodexColor color) {
   return SDL_SetRenderDrawColor(static_cast<SDL_Renderer *>(renderer), color.r, color.g, color.b,
                                 color.a);
@@ -110,6 +128,6 @@ const char *render_error() { return SDL_GetError(); }
 
 extern "C" WodexRenderApi wodex_render_api(void *renderer, const void *platform) {
   return {renderer, platform, font_open, font_close, font_line_skip, font_ascent, text_measure, text_size,
-          texture_create, texture_destroy, fill_rect, outline_rect, draw_line, copy_texture,
+          texture_create, texture_destroy, image_texture_create, fill_rect, outline_rect, draw_line, copy_texture,
           set_clip, render_error};
 }

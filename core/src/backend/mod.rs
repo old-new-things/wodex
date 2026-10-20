@@ -1,6 +1,7 @@
 //! Rust-owned I/O backends. Native tables expose ABI-specific primitives only.
 mod ffi;
 pub(crate) mod http;
+pub(crate) mod images;
 pub(crate) mod runtime;
 pub(crate) mod storage;
 pub(crate) mod transport;

@@ -2,6 +2,7 @@
 //! decisions remain in Rust; callbacks only translate native events and perform I/O.
 use crate::backend::{
   http::Http,
+  images::{ImageLoader, ImageResult},
   runtime::Runtime,
   storage::Fs,
   transport::Transport,
@@ -125,6 +126,9 @@ pub trait Host {
   fn cancel(&mut self);
   fn network_active(&self) -> bool;
   fn poll_transport(&mut self) -> Option<TransportEvent>;
+  fn request_image(&mut self, url: &str) -> bool;
+  fn poll_image(&mut self) -> Option<ImageResult>;
+  fn cancel_images(&mut self);
   fn update_status(&self) -> UpdateStatus;
   fn update_supported(&self) -> bool;
   fn update_active(&self) -> bool;
@@ -201,6 +205,7 @@ pub struct NativeHost {
   fs: Fs,
   save_path: String,
   transport: Transport,
+  images: ImageLoader,
   updater: Updater,
   transport_events: VecDeque<TransportEvent>,
   install_supported: bool,
@@ -246,6 +251,7 @@ impl NativeHost {
     let ca_bundle =
       if fs.is_switch() { "romfs:/cacert.pem".into() } else { fs.environment("WODEX_CA_BUNDLE") };
     let transport = Transport::new(runtime, http, ca_bundle.clone())?;
+    let images = ImageLoader::new(runtime, http, ca_bundle.clone())?;
     let updater =
       Updater::new(runtime, http, fs, version.into(), target, String::new(), ca_bundle)?;
     Ok(Self {
@@ -253,6 +259,7 @@ impl NativeHost {
       fs,
       save_path: format!("{directory}/state.json"),
       transport,
+      images,
       updater,
       transport_events: VecDeque::new(),
       install_supported,
@@ -276,6 +283,7 @@ impl NativeHost {
 impl Drop for NativeHost {
   fn drop(&mut self) {
     self.transport.cancel();
+    self.images.cancel();
     self.updater.cancel();
     // Each Rust backend joins its own worker before its shared data is dropped.
   }
@@ -317,6 +325,15 @@ impl Host for NativeHost {
       self.transport_events.extend(self.transport.poll());
     }
     self.transport_events.pop_front()
+  }
+  fn request_image(&mut self, url: &str) -> bool {
+    self.images.request(url)
+  }
+  fn poll_image(&mut self) -> Option<ImageResult> {
+    self.images.poll()
+  }
+  fn cancel_images(&mut self) {
+    self.images.cancel();
   }
   fn update_status(&self) -> UpdateStatus {
     self.updater.status()

@@ -1,7 +1,8 @@
 # Rust dependency notices
 
 These notices accompany the exact dependencies in `Cargo.lock`. The MIT
-alternative is selected where a package offers a choice. The additional
+alternative is selected where a package offers a choice, except for
+`zune-inflate`, which uses its Zlib alternative. The additional
 Unicode-3.0 notice is retained for `unicode-ident`. License files are copied
 without alteration from each published crate archive; the versioned crates.io
 links below identify their public source. Cargo verifies archive checksums
@@ -10,6 +11,13 @@ upstream commit listed below: released `pulldown-cmark` 0.13.4 still requires
 `std`, while this upstream revision supports `no_std` plus `hashbrown`.
 Its `std`, HTML-renderer, command-line and SIMD features are disabled.
 Replace the pin with a published no_std-compatible release when available.
+
+PNG/JPEG previews use `zune-png`, `zune-jpeg` and `zune-core` with default
+features disabled. Their portable Rust decoding and the PNG inflater remain
+`no_std`. `zune-inflate` 0.2.54 omits license files from its published archive;
+its [Zlib license and source notice](https://github.com/etemesi254/zune-image/tree/69502ce83fdfecdd0beefd677e2abb3781b29d98)
+are copied without alteration from the exact upstream commit recorded in
+that archive's `.cargo_vcs_info.json`.
 
 Build dependencies are included for completeness even though their code runs
 on the build host and is not linked into the Switch NRO. Target dependencies
@@ -40,6 +48,7 @@ platforms but is not selected by this Switch dependency graph.
 | [serde_derive 1.0.229](https://crates.io/crates/serde_derive/1.0.229) | Build dependency; not linked into the NRO | [LICENSE-MIT](serde_derive-1.0.229/LICENSE-MIT) |
 | [serde_json 1.0.154](https://crates.io/crates/serde_json/1.0.154) | Target dependency | [LICENSE-MIT](serde_json-1.0.154/LICENSE-MIT) |
 | [sha2 0.10.9](https://crates.io/crates/sha2/0.10.9) | Target dependency | [LICENSE-MIT](sha2-0.10.9/LICENSE-MIT) |
+| [simd-adler32 0.3.10](https://crates.io/crates/simd-adler32/0.3.10) | Target dependency | [MIT license](simd-adler32-0.3.10/LICENSE.md) |
 | [syn 3.0.9](https://crates.io/crates/syn/3.0.9) | Build dependency; not linked into the NRO | [LICENSE-MIT](syn-3.0.9/LICENSE-MIT) |
 | [typenum 1.20.1](https://crates.io/crates/typenum/1.20.1) | Target dependency | [LICENSE-MIT](typenum-1.20.1/LICENSE-MIT) |
 | [unicase 2.10.0](https://crates.io/crates/unicase/2.10.0) | Target dependency | [LICENSE-MIT](unicase-2.10.0/LICENSE-MIT) |
@@ -47,6 +56,10 @@ platforms but is not selected by this Switch dependency graph.
 | [unicode-width 0.2.2](https://crates.io/crates/unicode-width/0.2.2) | Target dependency | [LICENSE-MIT](unicode-width-0.2.2/LICENSE-MIT) |
 | [version_check 0.9.5](https://crates.io/crates/version_check/0.9.5) | Build dependency; not linked into the NRO | [LICENSE-MIT](version_check-0.9.5/LICENSE-MIT) |
 | [zmij 1.0.23](https://crates.io/crates/zmij/1.0.23) | Target dependency | [LICENSE-MIT](zmij-1.0.23/LICENSE-MIT) |
+| [zune-core 0.5.3](https://crates.io/crates/zune-core/0.5.3) | Target dependency | [LICENSE-MIT](zune-core-0.5.3/LICENSE-MIT) |
+| [zune-inflate 0.2.54](https://crates.io/crates/zune-inflate/0.2.54) | Target dependency | [Zlib license](zune-inflate-0.2.54/LICENSE-ZLIB), [source notice](zune-inflate-0.2.54/LICENSE.md) |
+| [zune-jpeg 0.5.15](https://crates.io/crates/zune-jpeg/0.5.15) | Target dependency | [LICENSE-MIT](zune-jpeg-0.5.15/LICENSE-MIT) |
+| [zune-png 0.5.2](https://crates.io/crates/zune-png/0.5.2) | Target dependency | [LICENSE-MIT](zune-png-0.5.2/LICENSE-MIT) |
 
 ## Rust runtime
 

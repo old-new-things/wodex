@@ -135,6 +135,8 @@ int main(int argc, char **argv) {
               wodex_app_new(&host_api, &render_api, &backend_api, WODEX_VERSION, update_target, demo, show_updates, &error),
               wodex_app_free);
           check_app(app != nullptr, error);
+          if (!screenshot_path.empty())
+            wodex_app_set_image_loading(app.get(), false);
           do {
             error = nullptr;
             const bool ticked = wodex_app_tick(app.get(), &error);

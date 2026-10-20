@@ -13,6 +13,7 @@ __pycache__/
 *.bmp
 *.png
 !/docs/preview.png
+!/tests/fixtures/image-*.png
 *.log
 /.wodex/
 .DS_Store

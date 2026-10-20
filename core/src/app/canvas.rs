@@ -1,3 +1,4 @@
+use crate::backend::images::DecodedImage;
 use alloc::collections::BTreeMap;
 use alloc::ffi::CString;
 use alloc::format;
@@ -8,6 +9,9 @@ use core::ops::Range;
 
 const CACHE_BYTES: usize = 16 * 1024 * 1024;
 const FONT_CACHE_LIMIT: usize = 32;
+const IMAGE_CACHE_BYTES: usize = 16 * 1024 * 1024;
+const IMAGE_CACHE_ENTRIES: usize = 32;
+const IMAGE_URL_BYTES: usize = 4096;
 
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
@@ -93,6 +97,8 @@ pub struct RenderApi {
     *mut i32,
   ) -> *mut c_void,
   pub texture_destroy: unsafe extern "C" fn(*mut c_void),
+  /// Copies tightly packed RGBA8 pixels into a native texture synchronously.
+  pub image_texture_create: unsafe extern "C" fn(*mut c_void, *const u8, u32, u32) -> *mut c_void,
   pub fill_rect: unsafe extern "C" fn(*mut c_void, Rect, Color) -> i32,
   pub outline_rect: unsafe extern "C" fn(*mut c_void, Rect, Color) -> i32,
   pub draw_line: unsafe extern "C" fn(*mut c_void, i32, i32, i32, i32, Color) -> i32,
@@ -138,6 +144,27 @@ struct TextureKey {
   text: String,
 }
 
+enum ImageState {
+  Idle,
+  Loading,
+  Ready(Texture),
+  Failed(String),
+}
+
+struct ImageEntry {
+  state: ImageState,
+  used: u64,
+}
+
+impl ImageEntry {
+  fn bytes(&self) -> usize {
+    match &self.state {
+      ImageState::Ready(texture) => texture.bytes,
+      _ => 0,
+    }
+  }
+}
+
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
 struct LayoutKey {
   size: i32,
@@ -168,6 +195,11 @@ pub struct Canvas {
   api: RenderApi,
   // Canvas drop releases textures before the remaining cached font handles.
   textures: BTreeMap<TextureKey, Texture>,
+  images: BTreeMap<String, ImageEntry>,
+  image_requests: Vec<String>,
+  image_bytes: usize,
+  image_clock: u64,
+  image_loading: bool,
   fonts: BTreeMap<(i32, FontStyle), Font>,
   layouts: BTreeMap<LayoutKey, Layout>,
   texture_bytes: usize,
@@ -186,6 +218,11 @@ impl Canvas {
     let mut result = Self {
       api: *api,
       textures: BTreeMap::new(),
+      images: BTreeMap::new(),
+      image_requests: Vec::new(),
+      image_bytes: 0,
+      image_clock: 0,
+      image_loading: true,
       fonts: BTreeMap::new(),
       layouts: BTreeMap::new(),
       texture_bytes: 0,
@@ -201,6 +238,170 @@ impl Canvas {
 
   pub fn take_error(&mut self) -> Option<String> {
     self.error.take()
+  }
+
+  /// A frame only offers URLs that its actual visible image cards draw.
+  pub fn begin_image_frame(&mut self) {
+    self.image_requests.clear();
+  }
+
+  pub fn set_image_loading(&mut self, enabled: bool) {
+    if self.image_loading && !enabled {
+      self.clear_images();
+    }
+    self.image_loading = enabled;
+  }
+
+  pub fn take_image_requests(&mut self) -> Vec<String> {
+    core::mem::take(&mut self.image_requests)
+  }
+
+  pub fn mark_image_loading(&mut self, url: &str) {
+    if let Some(entry) = self.images.get_mut(url) {
+      if matches!(entry.state, ImageState::Idle) {
+        entry.state = ImageState::Loading;
+      }
+    }
+  }
+
+  pub fn clear_images(&mut self) {
+    self.images.clear();
+    self.image_requests.clear();
+    self.image_bytes = 0;
+  }
+
+  fn evict_image(&mut self, except: &str) -> bool {
+    let oldest = self
+      .images
+      .iter()
+      .filter(|(url, _)| url.as_str() != except)
+      .min_by_key(|(_, entry)| entry.used)
+      .map(|(url, _)| url.clone());
+    let Some(oldest) = oldest else { return false };
+    if let Some(entry) = self.images.remove(&oldest) {
+      self.image_bytes -= entry.bytes();
+    }
+    self.image_requests.retain(|url| url != &oldest);
+    true
+  }
+
+  pub fn set_image_result(&mut self, url: &str, result: Result<DecodedImage, String>) {
+    // Cancellation, conversation changes, and eviction must never resurrect an
+    // old request or allocate a texture for a result that is no longer wanted.
+    if !self.images.get(url).is_some_and(|entry| matches!(entry.state, ImageState::Loading)) {
+      return;
+    }
+    let result = result.and_then(|image| {
+      let bytes = u64::from(image.width)
+        .checked_mul(u64::from(image.height))
+        .and_then(|pixels| pixels.checked_mul(4))
+        .filter(|bytes| *bytes <= IMAGE_CACHE_BYTES as u64 && *bytes == image.rgba.len() as u64);
+      let Some(bytes) = bytes else {
+        return Err("The image is too large or has invalid pixels.".into());
+      };
+      if image.width == 0
+        || image.height == 0
+        || image.width > i32::MAX as u32 / 4
+        || image.height > i32::MAX as u32
+      {
+        return Err("The image has invalid dimensions.".into());
+      }
+      while self.image_bytes.saturating_add(bytes as usize) > IMAGE_CACHE_BYTES {
+        if !self.evict_image(url) {
+          return Err("The image cache is full.".into());
+        }
+      }
+      let handle = unsafe {
+        (self.api.image_texture_create)(
+          self.api.renderer,
+          image.rgba.as_ptr(),
+          image.width,
+          image.height,
+        )
+      };
+      if handle.is_null() {
+        return Err("The image could not be displayed.".into());
+      }
+      Ok(Texture {
+        handle,
+        destroy: self.api.texture_destroy,
+        width: image.width as i32,
+        height: image.height as i32,
+        bytes: bytes as usize,
+        used: self.image_clock,
+      })
+    });
+    let state = match result {
+      Ok(texture) => {
+        self.image_bytes += texture.bytes;
+        ImageState::Ready(texture)
+      }
+      Err(message) => ImageState::Failed(preview(&message.replace('\0', ""), 120)),
+    };
+    if let Some(entry) = self.images.get_mut(url) {
+      entry.state = state;
+    }
+  }
+
+  /// Draws a fixed-size image card without fetching or decoding on the UI thread.
+  pub fn draw_image(&mut self, url: &str, alt: &str, area: Rect) {
+    let Some(clip) = intersection(self.clip, area) else { return };
+    let outer = self.clip;
+    self.clip(clip);
+    self.rect(area, BACKGROUND, 4);
+    let frame =
+      Rect { x: area.x + 8, y: area.y + 8, w: (area.w - 16).max(1), h: (area.h - 38).max(1) };
+    self.image_clock = self.image_clock.saturating_add(1);
+    let valid_url = self.image_loading && !url.is_empty() && url.len() <= IMAGE_URL_BYTES;
+    if valid_url && !self.images.contains_key(url) {
+      while self.images.len() >= IMAGE_CACHE_ENTRIES {
+        if !self.evict_image(url) {
+          break;
+        }
+      }
+      self
+        .images
+        .insert(url.into(), ImageEntry { state: ImageState::Idle, used: self.image_clock });
+    }
+    let mut pixels = None;
+    let mut status = String::from(if self.image_loading {
+      "Image address unavailable"
+    } else {
+      "Images disabled"
+    });
+    if let Some(entry) = self.images.get_mut(url).filter(|_| self.image_loading) {
+      entry.used = self.image_clock;
+      match &entry.state {
+        ImageState::Ready(texture) => {
+          pixels = Some((texture.handle, texture.width, texture.height))
+        }
+        ImageState::Idle => {
+          if !self.image_requests.iter().any(|request| request == url) {
+            self.image_requests.push(url.into());
+          }
+          status = "Loading image…".into();
+        }
+        ImageState::Loading => status = "Loading image…".into(),
+        ImageState::Failed(message) => {
+          status = if message.is_empty() { "Image unavailable".into() } else { message.clone() };
+        }
+      }
+    }
+    if let Some((handle, width, height)) = pixels {
+      let destination = fit_image(frame, width, height);
+      let status = unsafe { (self.api.copy_texture)(self.api.renderer, handle, destination) };
+      self.checked(status, "Cannot draw image");
+    } else if let Some(frame_clip) = intersection(clip, frame) {
+      self.clip(frame_clip);
+      let text_y = frame.y + (frame.h - 22).max(0) / 2;
+      self.paragraph(&status, frame.x + 6, text_y, 15, MUTED, (frame.w - 12).max(1), true);
+      self.clip(clip);
+    }
+    let caption = if alt.trim().is_empty() { "Image" } else { alt };
+    let caption = preview(&caption.replace(['\n', '\r', '\0'], " "), 256);
+    let length = self.measure_prefix(&caption, 14, FontStyle::Normal, frame.w);
+    self.text(&caption[..length], frame.x, area.y + area.h - 25, 14, MUTED, 0);
+    self.clip(outer);
   }
 
   fn native_error(&self, context: &str) -> String {
@@ -644,6 +845,37 @@ impl Canvas {
   }
 }
 
+fn intersection(left: Rect, right: Rect) -> Option<Rect> {
+  if left.w <= 0 || left.h <= 0 || right.w <= 0 || right.h <= 0 {
+    return None;
+  }
+  let x = left.x.max(right.x);
+  let y = left.y.max(right.y);
+  let end_x = (i64::from(left.x) + i64::from(left.w)).min(i64::from(right.x) + i64::from(right.w));
+  let end_y = (i64::from(left.y) + i64::from(left.h)).min(i64::from(right.y) + i64::from(right.h));
+  let width = end_x - i64::from(x);
+  let height = end_y - i64::from(y);
+  (width > 0 && height > 0).then_some(Rect { x, y, w: width as i32, h: height as i32 })
+}
+
+fn fit_image(area: Rect, width: i32, height: i32) -> Rect {
+  let (width, height) = (i64::from(width.max(1)), i64::from(height.max(1)));
+  let (available_width, available_height) = (i64::from(area.w.max(1)), i64::from(area.h.max(1)));
+  // Preserve aspect ratio, including very tall/narrow images, using integer
+  // arithmetic that is available in the Switch's no_std target.
+  let (draw_width, draw_height) = if width * available_height > height * available_width {
+    (available_width, (height * available_width / width).max(1))
+  } else {
+    ((width * available_height / height).max(1), available_height)
+  };
+  Rect {
+    x: area.x.saturating_add((area.w - draw_width as i32) / 2),
+    y: area.y.saturating_add((area.h - draw_height as i32) / 2),
+    w: draw_width as i32,
+    h: draw_height as i32,
+  }
+}
+
 fn integer_sqrt(value: u64) -> u64 {
   let (mut low, mut high) = (0u64, value.min(u32::MAX as u64) + 1);
   while low + 1 < high {
@@ -685,6 +917,8 @@ pub(crate) mod test_backend {
     measured: Vec<String>,
     pub drawn_text: Vec<String>,
     pub copied_rects: Vec<Rect>,
+    pub image_uploads: Vec<(u32, u32)>,
+    fail_image: bool,
     fail_measure: bool,
     texture_bytes: usize,
     wide_ascii: bool,
@@ -797,6 +1031,21 @@ pub(crate) mod test_backend {
     (*texture.backend).textures_destroyed += 1;
   }
 
+  unsafe extern "C" fn image_texture(
+    renderer: *mut c_void,
+    _pixels: *const u8,
+    width: u32,
+    height: u32,
+  ) -> *mut c_void {
+    let backend = &mut *renderer.cast::<Backend>();
+    if backend.fail_image {
+      return core::ptr::null_mut();
+    }
+    backend.image_uploads.push((width, height));
+    backend.textures_created += 1;
+    Box::into_raw(Box::new(FakeTexture { backend })).cast()
+  }
+
   unsafe extern "C" fn fill(renderer: *mut c_void, _area: Rect, _color: Color) -> i32 {
     (*renderer.cast::<Backend>()).fills += 1;
     0
@@ -842,6 +1091,7 @@ pub(crate) mod test_backend {
       text_size: size,
       texture_create: texture,
       texture_destroy: destroy,
+      image_texture_create: image_texture,
       fill_rect: fill,
       outline_rect: fill,
       draw_line: line,
@@ -855,6 +1105,122 @@ pub(crate) mod test_backend {
     let mut backend = Box::<Backend>::default();
     let canvas = unsafe { Canvas::new(&api(&mut backend)) }.unwrap();
     (backend, canvas)
+  }
+
+  fn image(width: u32, height: u32) -> DecodedImage {
+    DecodedImage { width, height, rgba: alloc::vec![255; width as usize * height as usize * 4] }
+  }
+
+  #[test]
+  fn images_request_only_visible_missing_urls_and_preserve_aspect_ratio() {
+    let (mut backend, mut canvas) = canvas();
+    canvas.clip(Rect { x: 0, y: 0, w: 300, h: 200 });
+    let card = Rect { x: 0, y: 0, w: 200, h: 150 };
+    let url = "https://example.test/cat.png";
+    canvas.begin_image_frame();
+    canvas.draw_image(url, "cat", Rect { y: 200, ..card });
+    canvas.draw_image(url, "cat", Rect { x: 300, ..card });
+    assert!(canvas.take_image_requests().is_empty());
+    assert!(canvas.images.is_empty());
+    canvas.draw_image(url, "cat", card);
+    canvas.draw_image(url, "same cat", card);
+    assert_eq!(canvas.take_image_requests(), [url]);
+    canvas.mark_image_loading(url);
+    canvas.draw_image(url, "cat", card);
+    assert!(canvas.take_image_requests().is_empty());
+    canvas.set_image_result(url, Ok(image(4, 2)));
+    assert_eq!(backend.image_uploads, [(4, 2)]);
+    backend.copied_rects.clear();
+    canvas.draw_image(url, "cat", card);
+    assert_eq!(backend.copied_rects[0], Rect { x: 8, y: 18, w: 184, h: 92 });
+    assert_eq!(canvas.clip_area(), Rect { x: 0, y: 0, w: 300, h: 200 });
+    let partial_clip = Rect { x: 100, y: 40, w: 60, h: 30 };
+    canvas.clip(partial_clip);
+    backend.copied_rects.clear();
+    canvas.draw_image(url, "cat", card);
+    // Cropping uses the viewport, never a rescaled or stretched destination.
+    assert_eq!(backend.copied_rects[0], Rect { x: 8, y: 18, w: 184, h: 92 });
+    assert_eq!(canvas.clip_area(), partial_clip);
+    assert!(canvas.take_image_requests().is_empty());
+    assert!(canvas.take_error().is_none());
+  }
+
+  #[test]
+  fn disabled_failed_invalid_and_stale_images_do_not_allocate_or_repeat_requests() {
+    let (mut backend, mut canvas) = canvas();
+    let card = Rect { x: 0, y: 0, w: 200, h: 150 };
+    let url = "https://example.test/cat.png";
+    canvas.set_image_loading(false);
+    canvas.draw_image(url, "cat", card);
+    assert!(canvas.take_image_requests().is_empty());
+    assert!(canvas.images.is_empty());
+    assert!(backend.drawn_text.iter().any(|text| text == "Images disabled"));
+    canvas.set_image_loading(true);
+    canvas.draw_image(url, "cat", card);
+    canvas.begin_image_frame();
+    assert!(canvas.take_image_requests().is_empty());
+    canvas.mark_image_loading(url);
+    canvas
+      .set_image_result(url, Ok(DecodedImage { width: 20, height: 20, rgba: alloc::vec![0; 4] }));
+    canvas.draw_image(url, "cat", card);
+    assert!(canvas.take_image_requests().is_empty());
+    assert!(backend.image_uploads.is_empty());
+    assert!(matches!(canvas.images[url].state, ImageState::Failed(_)));
+    canvas.clear_images();
+    canvas.set_image_result(url, Ok(image(2, 2)));
+    assert!(backend.image_uploads.is_empty());
+    canvas.draw_image(url, "cat", card);
+    canvas.mark_image_loading(url);
+    backend.fail_image = true;
+    canvas.set_image_result(url, Ok(image(2, 2)));
+    assert!(matches!(canvas.images[url].state, ImageState::Failed(_)));
+    assert!(canvas.take_error().is_none());
+    canvas.set_image_loading(false);
+    assert!(canvas.images.is_empty());
+  }
+
+  #[test]
+  fn image_cache_bounds_pixels_metadata_and_releases_native_textures() {
+    let (backend, mut canvas) = canvas();
+    let card = Rect { x: 0, y: 0, w: 200, h: 150 };
+    for name in ["first", "second", "third"] {
+      canvas.draw_image(name, name, card);
+      canvas.mark_image_loading(name);
+      canvas.set_image_result(name, Ok(image(2048, 1024)));
+    }
+    assert_eq!(canvas.images.len(), 2);
+    assert_eq!(canvas.image_bytes, IMAGE_CACHE_BYTES);
+    assert!(!canvas.images.contains_key("first"));
+    assert_eq!(backend.image_uploads.len(), 3);
+    let destroyed = backend.textures_destroyed;
+    canvas.clear_images();
+    assert_eq!(backend.textures_destroyed, destroyed + 2);
+    assert_eq!(canvas.image_bytes, 0);
+    for index in 0..40 {
+      let name = format!("missing-{index}");
+      canvas.draw_image(&name, &name, card);
+      canvas.mark_image_loading(&name);
+      canvas.set_image_result(&name, Err("Not found".into()));
+    }
+    assert_eq!(canvas.images.len(), IMAGE_CACHE_ENTRIES);
+    assert_eq!(canvas.image_bytes, 0);
+    assert!(canvas.take_image_requests().len() <= IMAGE_CACHE_ENTRIES);
+    drop(canvas);
+    assert_eq!(backend.textures_created, backend.textures_destroyed);
+    assert_eq!(backend.fonts_opened, backend.fonts_closed);
+  }
+
+  #[test]
+  fn image_fit_and_clip_intersections_handle_extreme_aspect_ratios() {
+    let frame = Rect { x: 10, y: 20, w: 100, h: 100 };
+    assert_eq!(fit_image(frame, 1, 10000), Rect { x: 59, y: 20, w: 1, h: 100 });
+    assert_eq!(fit_image(frame, 10000, 1), Rect { x: 10, y: 69, w: 100, h: 1 });
+    assert_eq!(intersection(frame, Rect { x: 110, ..frame }), None);
+    assert_eq!(intersection(frame, Rect { w: 0, ..frame }), None);
+    assert_eq!(
+      intersection(frame, Rect { x: 100, y: 50, w: 100, h: 100 }),
+      Some(Rect { x: 100, y: 50, w: 10, h: 70 })
+    );
   }
 
   #[test]

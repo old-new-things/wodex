@@ -23,7 +23,7 @@
         },
         {
           "role": "assistant",
-          "content": "## Markdown on Switch\n**Bold 中文**, *emphasis 繁體*, ~~finished~~ and `inline_code`.\n\n混合文字保持清晰：你好，世界。日本語／한국어／𠮷。\n\nEscaped punctuation: \\*literal stars\\*. [Project page](https://example.com/docs).\n\n![A green leaf / 一片绿叶](https://example.com/leaf.png)",
+          "content": "## Markdown on Switch\n**Bold 中文**, *emphasis 繁體*, ~~finished~~ and `inline_code`.\n\n混合文字保持清晰：你好，世界。日本語／한국어／𠮷。\n\nEscaped punctuation: \\*literal stars\\*. [Project page](https://example.com/docs).",
           "reasoning_content": "",
           "status": "complete"
         }

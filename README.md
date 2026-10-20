@@ -4,7 +4,7 @@
 
 A native DeepSeek chat client for Nintendo Switch homebrew, with a desktop build for development. Inspired by wiliwili's controller navigation and readable handheld interface.
 
-The app streams Markdown replies, saves conversations, supports thinking mode, includes a Chinese-capable font, and uses the Switch system keyboard. It also checks the Versions and Nightly channels for updates and can replace its verified Switch NRO on exit. A real ARM64 `.nro` has been cross-compiled and linked. Physical Switch testing and a live request with your own DeepSeek key are still required.
+The app streams Markdown replies with PNG/JPEG images, saves conversations, supports thinking mode, includes a Chinese-capable font, and uses the Switch system keyboard. It also checks the Versions and Nightly channels for updates and can replace its verified Switch NRO on exit. A real ARM64 `.nro` has been cross-compiled and linked. Physical Switch testing and a live request with your own DeepSeek key are still required.
 
 ![Desktop preview](docs/preview.png)
 
@@ -90,7 +90,7 @@ Successful `main` builds publish timestamped nightlies to [GitHub Pages](https:/
 - HTTPS certificates are verified, redirects are refused, and provider error bodies are not displayed. Plain HTTP is limited to loopback addresses for local tests.
 - Limits: 32 conversations, 128 messages per conversation, 64 KiB per prompt, 512 KiB combined answer/reasoning, 2 MiB total message text, and 4 MiB saved JSON. Delete an older conversation when storage is full. Long answers remain fully scrollable.
 
-Current scope is text chat. Markdown is displayed as readable text; tool execution, attachments, image generation, search, and account login are outside this release. Switch keyboard input follows libnx's size limits; a very long existing draft cannot be reopened without shortening it.
+Current scope is text chat with Markdown and images referenced in replies. Image uploads, image generation, tool execution, search, and account login are outside this release. Switch keyboard input follows libnx's size limits; a very long existing draft cannot be reopened without shortening it.
 
 ## Fonts and Chinese text
 
@@ -106,7 +106,7 @@ SDL_ttf/FreeType reads UTF-8 text using the font's stream API; Wodex does not ma
 
 Assistant replies and thinking text render headings, bold/italic/strikethrough, lists and task markers, quotes, links, inline and fenced code, and tables. Streaming replies update their formatting as text arrives. Code preserves indentation and wraps long lines; wide tables become labeled rows to fit the handheld display.
 
-The Rust renderer uses the bundled CJK font and stays `no_std`. Links show their destinations and images show alternative text; neither triggers network requests. User messages, the composer, saved history, and API requests preserve their original text. [Markdown support and limits](docs/markdown.md) includes reproducible visual fixtures. Markdown is available in current nightlies.
+The Rust renderer uses the bundled CJK font and stays `no_std`. Markdown images with direct HTTPS PNG or JPEG URLs load in the background when visible, preserve their aspect ratio, and show alternative text. Downloads do not include your API key or conversation history. Ordinary links remain text; user messages, the composer, saved history, and API requests preserve their original source. [Markdown support and limits](docs/markdown.md) describes supported images and reproducible visual fixtures. These features are available in current nightlies.
 
 ## Self-updates
 
@@ -131,13 +131,13 @@ cmake --build build/desktop --parallel
 ctest --test-dir build/desktop --output-on-failure
 ```
 
-The integration tests start isolated loopback mock servers. They drive the Rust application through SDL input and the Rust network backend's real curl bindings, and test fragmented UTF-8 streams, reasoning, usage, retry, HTTP errors, cancellation, queue limits, and durable storage. Update tests exercise the Rust updater's downloads, checksums, Pages source restrictions, cancellation, backup preservation and rollback failures. Rust fault-injection tests cover short/interrupted writes, failed flushes, save rotation and rollback. Markdown tests cover parsing, streaming fragments, style-aware wrapping, tables, code indentation, bounded caches and long-message fallback. Font tests exercise the production Rust renderer with real styled Chinese and mixed-language fonts; UI smoke tests render chat and update pages. Publication tests cover artifact integrity, immutable versions, retention, archive extraction and deployment-state recovery. No tests require a real API key or spend API credits.
+The integration tests start isolated loopback mock servers. They drive the Rust application through SDL input and the Rust network backend's real curl bindings, and test fragmented UTF-8 streams, reasoning, usage, retry, HTTP errors, cancellation, queue limits, and durable storage. Image tests exercise actual PNG/JPEG decoding and SDL pixels, transparency, aspect ratio, duplicate requests, invalid images, download limits, credential isolation, and cancellation. Update tests exercise the Rust updater's downloads, checksums, Pages source restrictions, cancellation, backup preservation and rollback failures. Rust fault-injection tests cover short/interrupted writes, failed flushes, save rotation and rollback. Markdown tests cover parsing, streaming fragments, style-aware wrapping, tables, code indentation, bounded caches and long-message fallback. Font tests exercise the production Rust renderer with real styled Chinese and mixed-language fonts; UI smoke tests render chat and update pages. Publication tests cover artifact integrity, immutable versions, retention, archive extraction and deployment-state recovery. No tests require a real API key or spend API credits.
 
 ## Source map
 
 - `core/src/app/`: Rust views, editor, text layout/cache, platform interfaces, and tests.
 - `core/src/app.rs`: Rust application actions, navigation, chat/update coordination, and saving.
-- `core/src/backend/`: Rust HTTP policy, workers, streaming queues, durable storage, font selection, updater, installation and rollback.
+- `core/src/backend/`: Rust HTTP policy, workers, image downloads/decoding, streaming queues, durable storage, font selection, updater, installation and rollback.
 - `core/src/`: conversation state, validation, persistence model, SSE parser, version-feed validation, and C ABI.
 - `native/`: SDL/TTF, libnx, POSIX filesystem, curl and thread/mutex bindings, input normalization, and process lifecycle.
 - `scripts/`: desktop dependency fallback and Switch build.

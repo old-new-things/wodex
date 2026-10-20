@@ -38,6 +38,8 @@ typedef struct WodexRenderApi {
   void *(*texture_create)(void *, void *, const char *, WodexColor, int32_t,
                          int32_t *, int32_t *);
   void (*texture_destroy)(void *);
+  // Synchronously copies tightly packed RGBA8 pixels; does not retain the buffer.
+  void *(*image_texture_create)(void *, const uint8_t *, uint32_t, uint32_t);
   int32_t (*fill_rect)(void *, WodexRect, WodexColor);
   int32_t (*outline_rect)(void *, WodexRect, WodexColor);
   int32_t (*draw_line)(void *, int32_t, int32_t, int32_t, int32_t, WodexColor);

@@ -32,6 +32,8 @@ pub struct App<H: Host> {
   checked_source: Option<(String, UpdateChannel)>,
   stored_key: String,
   last_save: u64,
+  image_loading: bool,
+  image_context: String,
 }
 
 impl<H: Host> App<H> {
@@ -51,6 +53,8 @@ impl<H: Host> App<H> {
       checked_source: None,
       stored_key: String::new(),
       last_save: 0,
+      image_loading: true,
+      image_context: String::new(),
     };
     if demo {
       app.seed_demo();
@@ -88,6 +92,13 @@ impl<H: Host> App<H> {
 
   pub fn running(&self) -> bool {
     self.running && self.host.running()
+  }
+
+  pub fn set_image_loading(&mut self, enabled: bool) {
+    self.image_loading = enabled;
+    if !enabled {
+      self.host.cancel_images();
+    }
   }
 
   pub fn tick(&mut self) {
@@ -138,6 +149,22 @@ impl<H: Host> App<H> {
   }
 
   pub fn render(&mut self, canvas: &mut Canvas) -> Result<(), String> {
+    let load_images = self.image_loading && !self.demo;
+    let context = if load_images && self.ui.page == Page::Chat {
+      self.core.state().active_id.as_str()
+    } else {
+      ""
+    };
+    if self.image_context != context {
+      self.host.cancel_images();
+      canvas.clear_images();
+      self.image_context = context.into();
+    }
+    canvas.set_image_loading(load_images);
+    canvas.begin_image_frame();
+    while let Some(image) = self.host.poll_image() {
+      canvas.set_image_result(&image.url, image.result);
+    }
     let mut status = self.host.update_status();
     if !self.host.update_active() && !self.update_source_checked() {
       status = UpdateStatus::default();
@@ -152,6 +179,15 @@ impl<H: Host> App<H> {
       self.host.update_supported(),
       self.editor.as_ref().map(Editor::view),
     );
+    if load_images && self.running && !self.host.update_active() {
+      // Candidates come only from visible cards. A single loader handles one
+      // candidate; the next frame discovers any remaining visible images.
+      if let Some(url) = canvas.take_image_requests().into_iter().next() {
+        if self.host.request_image(&url) {
+          canvas.mark_image_loading(&url);
+        }
+      }
+    }
     canvas.take_error().map_or(Ok(()), Err)
   }
 
@@ -694,6 +730,7 @@ impl<H: Host> App<H> {
   }
 
   fn close(&mut self) {
+    self.host.cancel_images();
     self.host.update_cancel();
     self.host.cancel();
     if self.streaming() {
