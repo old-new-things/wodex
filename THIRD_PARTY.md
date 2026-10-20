@@ -6,7 +6,7 @@
 - [FreeType](https://freetype.org/): FreeType Project License or GPLv2. Linked through SDL2_ttf under the FreeType Project License.
 - [libcurl](https://curl.se/docs/copyright.html): curl license.
 - [libnx](https://github.com/switchbrew/libnx): ISC license. The Switch SDK supplies libnx and native library builds; their notices remain in the SDK/package sources.
-- Rust crates `serde` and `serde_json`: MIT OR Apache-2.0. Exact versions are recorded in `Cargo.lock`.
+- Rust crates `serde`, `serde_json` and `sha2`: MIT OR Apache-2.0. Exact versions and transitive dependencies are recorded in `Cargo.lock`. `sha2` provides incremental SHA-256 verification using its software backend on Switch.
 - [Noto Sans CJK SC Regular 2.004](https://github.com/notofonts/noto-cjk/blob/Sans2.004/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf): Copyright © 2014–2021 Adobe (http://www.adobe.com/), SIL Open Font License 1.1. The unmodified font, full license and provenance are included in `romfs/fonts/` and packaged into RomFS. SHA-256: `2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b`.
 
 Wodex does not redistribute Nintendo's shared fonts; it opens them through libnx only when falling back from the bundled font. Desktop system fonts are likewise loaded only as a fallback or explicit user override. No wiliwili source code or assets are incorporated.

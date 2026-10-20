@@ -1,0 +1,159 @@
+name: Publish stable Switch release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing stable tag matching its VERSION file, such as v0.2.0
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stable-release
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      commit: ${{ steps.source.outputs.commit }}
+    steps:
+      - name: Validate requested stable tag
+        id: tag
+        env:
+          REQUESTED_TAG: ${{ inputs.tag || github.ref_name }}
+          REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          tag = os.environ['REQUESTED_TAG']
+          if len(tag) > 16 or not re.fullmatch(r'v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)', tag):
+            raise SystemExit('Only existing stable tags in vX.Y.Z format can be published.')
+          if os.environ['REPOSITORY_PRIVATE'] != 'false':
+            raise SystemExit('In-app updates require a public GitHub release repository.')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+            output.write(f'tag={tag}\n')
+          PY
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ steps.tag.outputs.tag }}
+          fetch-depth: 0
+      - name: Validate tagged source version
+        id: source
+        env:
+          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import re
+          import subprocess
+          source = Path('VERSION').read_text()
+          if len(source.strip()) > 15 or not re.fullmatch(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\n?', source):
+            raise SystemExit('VERSION must contain one stable X.Y.Z version of at most 15 characters.')
+          if os.environ['RELEASE_TAG'] != 'v' + source.strip():
+            raise SystemExit('The requested release tag does not match VERSION in that tag.')
+          commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+            output.write(f'commit={commit}\n')
+          PY
+
+  build:
+    needs: validate
+    uses: ./.github/workflows/build.yml
+    with:
+      ref: ${{ needs.validate.outputs.commit }}
+
+  publish:
+    needs: [validate, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: wodex-switch
+          path: release
+      - name: Verify assets, then publish stable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import subprocess
+          import time
+
+          tag = os.environ['RELEASE_TAG']
+          repository = os.environ['GH_REPO']
+          if len(tag) > 16 or not re.fullmatch(r'v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)', tag):
+            raise SystemExit('The release tag is not a stable version.')
+          root = Path('release')
+          if tag != 'v' + (root / 'VERSION').read_text().strip():
+            raise SystemExit('The built artifact version does not match the release tag.')
+          binary = (root / 'wodex.nro').read_bytes()
+          if not 0 < len(binary) <= 128 * 1024 * 1024 or binary[0x10:0x14] != b'NRO0':
+            raise SystemExit('The release artifact is not a supported NRO.')
+          digest = hashlib.sha256(binary).hexdigest()
+          if (root / 'wodex.nro.sha256').read_text().split() != [digest, 'wodex.nro']:
+            raise SystemExit('The artifact checksum does not match wodex.nro.')
+          asset_names = ['wodex.nro', 'wodex.nro.sha256', 'LICENSE', 'THIRD_PARTY.md',
+                         'NotoSansCJK-OFL.txt', 'NotoSansCJK-README.md']
+          for name in asset_names:
+            if not (root / name).is_file() or (root / name).stat().st_size == 0:
+              raise SystemExit(f'Missing release asset: {name}')
+
+          def gh(*arguments, payload=None):
+            result = subprocess.run(['gh', *arguments], check=True, text=True,
+                                    input=json.dumps(payload) if payload is not None else None,
+                                    capture_output=True)
+            return result.stdout
+
+          notes = root / 'release-notes.md'
+          notes.write_text(
+            'Native DeepSeek chat for Nintendo Switch homebrew.\n\n'
+            'Install wodex.nro manually, or use Settings → Updates in Wodex. '
+            'The update asset keeps the name wodex.nro. Restart from hbmenu after installation.\n\n'
+            'The NRO includes the Noto Sans CJK font, its license and attribution. '
+            'Additional source and license notices are attached.\n')
+          # Keep the release hidden from clients until every uploaded byte is verified.
+          gh('release', 'create', tag, '--repo', repository, '--verify-tag',
+             '--draft', '--prerelease=false', '--latest=false', '--title', f'Wodex {tag}',
+             '--notes-file', str(notes), *(str(root / name) for name in asset_names))
+          # The REST tag endpoint excludes drafts. gh resolves a draft's ID via
+          # GraphQL, then the ID endpoint exposes its uploaded asset metadata.
+          release_view = json.loads(gh('release', 'view', tag, '--repo', repository, '--json', 'databaseId'))
+          release_id = release_view.get('databaseId')
+          if type(release_id) is not int or release_id <= 0:
+            raise SystemExit('Cannot resolve the draft release ID; release remains a draft.')
+          endpoint = f'repos/{repository}/releases/{release_id}'
+          for attempt in range(6):
+            release = json.loads(gh('api', endpoint))
+            candidates = [asset for asset in release.get('assets', []) if asset.get('name') == 'wodex.nro']
+            if len(candidates) == 1 and candidates[0].get('digest') is not None:
+              break
+            if attempt < 5:
+              time.sleep(5)
+          else:
+            raise SystemExit('GitHub did not provide the update asset digest; release remains a draft.')
+          asset = candidates[0]
+          if (release.get('draft') is not True or release.get('prerelease') is not False or
+              release.get('tag_name') != tag or asset.get('state') != 'uploaded' or
+              asset.get('size') != len(binary) or asset.get('digest') != 'sha256:' + digest):
+            raise SystemExit('Uploaded release metadata failed validation; release remains a draft.')
+          gh('api', '--method', 'PATCH', endpoint,
+             '--input', '-', payload={'draft': False, 'prerelease': False, 'make_latest': 'legacy'})
+          print(f'Published verified stable release {tag}: sha256:{digest}')
+          PY

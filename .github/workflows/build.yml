@@ -2,8 +2,15 @@ name: Build and test
 
 on:
   push:
+    branches: ['**']
   pull_request:
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        description: Commit to test and build
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -13,10 +20,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
       - name: Install native dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build pkg-config libsdl2-dev libsdl2-ttf-dev libcurl4-openssl-dev
+          sudo apt-get install -y cmake ninja-build pkg-config libsdl2-dev libsdl2-ttf-dev libcurl4-openssl-dev fonts-dejavu-core
       - name: Install Rust
         run: rustup toolchain install stable --profile minimal --component rustfmt,clippy
       - name: Check Rust
@@ -36,6 +45,8 @@ jobs:
       image: devkitpro/devkita64:20260219
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
       - name: Install pinned Rust cross compiler
         shell: bash
         run: |
@@ -45,11 +56,25 @@ jobs:
       - name: Build NRO
         shell: bash
         run: bash scripts/build-switch.sh
+      - name: Prepare portable update assets
+        shell: bash
+        run: |
+          cp VERSION LICENSE THIRD_PARTY.md build/switch/
+          cp romfs/fonts/OFL.txt build/switch/NotoSansCJK-OFL.txt
+          cp romfs/fonts/README.md build/switch/NotoSansCJK-README.md
+          cd build/switch
+          sha256sum wodex.nro > wodex.nro.sha256
       - uses: actions/upload-artifact@v4
         with:
           name: wodex-switch
           path: |
             build/switch/wodex.nro
+            build/switch/wodex.nro.sha256
+            build/switch/VERSION
+            build/switch/LICENSE
+            build/switch/THIRD_PARTY.md
+            build/switch/NotoSansCJK-OFL.txt
+            build/switch/NotoSansCJK-README.md
             build/switch/wodex.elf
             build/switch/wodex.map
           if-no-files-found: error

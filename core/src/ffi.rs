@@ -1,4 +1,5 @@
 use crate::state::{WodexCore, MAX_COMMAND_BYTES, MAX_FEED_BYTES, MAX_SAVED_BYTES};
+use crate::update::{self, WodexSha256, MAX_NRO_BYTES, MAX_RELEASE_BYTES, MAX_VERSION_BYTES};
 use alloc::{boxed::Box, ffi::CString};
 use core::{ffi::c_char, slice, str};
 
@@ -84,9 +85,70 @@ pub unsafe extern "C" fn wodex_string_free(value: *mut c_char) {
   }
 }
 
+#[no_mangle]
+pub unsafe extern "C" fn wodex_update_inspect(
+  release_json: *const c_char,
+  current_version: *const c_char,
+) -> *mut c_char {
+  let (Ok(release), Ok(current)) = (
+    bounded_text(release_json, MAX_RELEASE_BYTES),
+    bounded_text(current_version, MAX_VERSION_BYTES),
+  ) else {
+    return result_string(serde_json::json!({
+      "ok":false,"available":false,"error":"Invalid, missing, or oversized update metadata."
+    }));
+  };
+  result_string(update::inspect(release, current))
+}
+
+#[no_mangle]
+pub extern "C" fn wodex_sha256_new() -> *mut WodexSha256 {
+  Box::into_raw(Box::new(WodexSha256::new()))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn wodex_sha256_update(
+  hash: *mut WodexSha256,
+  data: *const u8,
+  len: usize,
+) -> bool {
+  let Some(hash) = hash.as_mut() else { return false };
+  if len > MAX_FEED_BYTES || (data.is_null() && len != 0) {
+    return false;
+  }
+  let bytes = if len == 0 { &[] } else { slice::from_raw_parts(data, len) };
+  hash.update(bytes)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn wodex_sha256_finish(hash: *mut WodexSha256) -> *mut c_char {
+  let Some(hash) = hash.as_mut() else { return core::ptr::null_mut() };
+  CString::new(hash.finish()).map_or(core::ptr::null_mut(), CString::into_raw)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn wodex_sha256_free(hash: *mut WodexSha256) {
+  if !hash.is_null() {
+    drop(Box::from_raw(hash));
+  }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn wodex_nro_validate(
+  header: *const u8,
+  header_len: usize,
+  file_size: u64,
+) -> bool {
+  if header.is_null() || header_len < 0x80 || header_len as u64 > MAX_NRO_BYTES {
+    return false;
+  }
+  update::validate_nro(slice::from_raw_parts(header, header_len), file_size)
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
+  use alloc::format;
   use core::ffi::CStr;
 
   #[test]
@@ -107,6 +169,62 @@ mod tests {
       wodex_free(core::ptr::null_mut());
       wodex_string_free(core::ptr::null_mut());
       assert!(wodex_call(core::ptr::null_mut(), command.as_ptr()).is_null());
+    }
+  }
+
+  #[test]
+  fn update_and_hash_ffi_preserve_ownership_and_reject_invalid_inputs() {
+    unsafe {
+      let metadata = CString::new(format!("{{\"tag_name\":\"v0.2.0\",\"draft\":false,\"prerelease\":false,\"assets\":[{{\"name\":\"wodex.nro\",\"state\":\"uploaded\",\"size\":1000,\"browser_download_url\":\"https://github.com/example/wodex/releases/download/v0.2.0/wodex.nro\",\"digest\":\"sha256:{}\"}}]}}", "ab".repeat(32))).unwrap();
+      let current = CString::new("0.1.0").unwrap();
+      let response = wodex_update_inspect(metadata.as_ptr(), current.as_ptr());
+      let parsed: serde_json::Value =
+        serde_json::from_slice(CStr::from_ptr(response).to_bytes()).unwrap();
+      assert_eq!(parsed["available"], true);
+      assert_eq!(parsed["release"]["version"], "0.2.0");
+      wodex_string_free(response);
+      let invalid = wodex_update_inspect(core::ptr::null(), current.as_ptr());
+      let parsed: serde_json::Value =
+        serde_json::from_slice(CStr::from_ptr(invalid).to_bytes()).unwrap();
+      assert_eq!(parsed["ok"], false);
+      wodex_string_free(invalid);
+      let bad_utf8 = [0xff_u8, 0];
+      let invalid = wodex_update_inspect(bad_utf8.as_ptr().cast(), current.as_ptr());
+      let parsed: serde_json::Value =
+        serde_json::from_slice(CStr::from_ptr(invalid).to_bytes()).unwrap();
+      assert_eq!(parsed["ok"], false);
+      wodex_string_free(invalid);
+
+      let hash = wodex_sha256_new();
+      assert!(!hash.is_null());
+      assert!(wodex_sha256_update(hash, core::ptr::null(), 0));
+      assert!(!wodex_sha256_update(hash, core::ptr::null(), 1));
+      assert!(!wodex_sha256_update(hash, b"x".as_ptr(), MAX_FEED_BYTES + 1));
+      for byte in b"abc" {
+        assert!(wodex_sha256_update(hash, byte, 1));
+      }
+      for _ in 0..2 {
+        let digest = wodex_sha256_finish(hash);
+        assert_eq!(
+          CStr::from_ptr(digest).to_str().unwrap(),
+          "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        wodex_string_free(digest);
+      }
+      assert!(!wodex_sha256_update(hash, b"x".as_ptr(), 1));
+      wodex_sha256_free(hash);
+      wodex_sha256_free(core::ptr::null_mut());
+      assert!(wodex_sha256_finish(core::ptr::null_mut()).is_null());
+      assert!(!wodex_sha256_update(core::ptr::null_mut(), b"abc".as_ptr(), 3));
+
+      let mut header = [0_u8; 0x80];
+      header[0x10..0x14].copy_from_slice(b"NRO0");
+      for offset in [0x18, 0x24, 0x28, 0x30] {
+        header[offset..offset + 4].copy_from_slice(&0x80_u32.to_le_bytes());
+      }
+      assert!(wodex_nro_validate(header.as_ptr(), header.len(), 0x80));
+      assert!(!wodex_nro_validate(header.as_ptr(), 127, 0x80));
+      assert!(!wodex_nro_validate(core::ptr::null(), 0, 0x80));
     }
   }
 }

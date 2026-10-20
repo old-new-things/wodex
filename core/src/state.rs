@@ -23,6 +23,8 @@ pub struct Settings {
   pub thinking: bool,
   pub max_tokens: u32,
   pub system_prompt: String,
+  #[serde(default)]
+  pub update_repository: String,
 }
 
 impl Default for Settings {
@@ -34,6 +36,7 @@ impl Default for Settings {
       thinking: false,
       max_tokens: 4096,
       system_prompt: "You are a helpful assistant. Give clear, accurate answers.".into(),
+      update_repository: String::new(),
     }
   }
 }
@@ -47,6 +50,7 @@ struct SettingsPatch {
   thinking: Option<bool>,
   max_tokens: Option<u32>,
   system_prompt: Option<String>,
+  update_repository: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
@@ -254,7 +258,7 @@ impl WodexCore {
             }
           })+};
         }
-        apply!(api_key, base_url, model, thinking, max_tokens, system_prompt);
+        apply!(api_key, base_url, model, thinking, max_tokens, system_prompt, update_repository);
         settings.base_url = settings.base_url.trim_end_matches('/').into();
         validate_settings(&settings)?;
         self.state.settings = settings;
@@ -718,6 +722,13 @@ fn make_title(content: &str) -> String {
 }
 
 fn validate_settings(settings: &Settings) -> Result<(), String> {
+  if !settings.update_repository.is_empty()
+    && !crate::update::valid_repository(&settings.update_repository)
+  {
+    return Err(
+      "Enter a public GitHub repository as owner/repo, or leave the update source empty.".into(),
+    );
+  }
   if settings.api_key.len() > 4096
     || settings.api_key.chars().any(|c| c.is_whitespace() || c.is_control())
   {
@@ -1164,5 +1175,44 @@ mod tests {
     assert_eq!(command(&mut exhausted, json!({"op":"snapshot"}))["ok"], true);
     let response = command(&mut exhausted, json!({"op":"send","content":"Still usable"}));
     assert_eq!(response["request"]["url"], "https://api.deepseek.com/chat/completions");
+  }
+
+  #[test]
+  fn legacy_saves_default_to_no_update_source_and_source_settings_are_validated() {
+    let mut core = ready();
+    assert!(core.state.settings.update_repository.is_empty());
+    let mut saved = command(&mut core, json!({"op":"export"}))["data"].clone();
+    saved["settings"].as_object_mut().unwrap().remove("update_repository");
+    let mut restored = WodexCore::new(Some(&saved.to_string()));
+    assert!(restored.load_error.is_none());
+    assert!(restored.state.settings.update_repository.is_empty());
+    assert_eq!(
+      command(
+        &mut restored,
+        json!({"op":"settings","settings":{"update_repository":"example/wodex"}})
+      )["ok"],
+      true
+    );
+    for invalid in [
+      "../repo",
+      "https://github.com/example/wodex",
+      "example/repo/extra",
+      "example/..",
+      "example/repo?token=x",
+    ] {
+      assert_eq!(
+        command(&mut restored, json!({"op":"settings","settings":{"update_repository":invalid}}))
+          ["ok"],
+        false
+      );
+      assert_eq!(restored.state.settings.update_repository, "example/wodex");
+    }
+    let exported = command(&mut restored, json!({"op":"export"}));
+    let restored_again = WodexCore::new(Some(&exported["data"].to_string()));
+    assert_eq!(restored_again.state.settings.update_repository, "example/wodex");
+    assert_eq!(
+      command(&mut restored, json!({"op":"settings","settings":{"update_repository":""}}))["ok"],
+      true
+    );
   }
 }

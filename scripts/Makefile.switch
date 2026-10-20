@@ -10,7 +10,11 @@ BUILD_DIR := $(PROJECT_ROOT)/build/switch
 OUTPUT := $(BUILD_DIR)/wodex
 APP_TITLE := Wodex
 APP_AUTHOR := Wodex contributors
-APP_VERSION := 0.1.0
+VERSION_FILE := $(PROJECT_ROOT)/VERSION
+APP_VERSION := $(shell awk 'NR == 1 && length($$0) <= 15 && $$0 ~ /^(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)$$/ { version=$$0; next } { invalid=1 } END { if (NR == 1 && !invalid) print version }' "$(VERSION_FILE)")
+ifeq ($(APP_VERSION),)
+$(error VERSION must contain one stable X.Y.Z version of at most 15 characters)
+endif
 APP_ICON := $(PROJECT_ROOT)/assets/icon.jpg
 
 include $(DEVKITPRO)/libnx/switch_rules
@@ -22,7 +26,8 @@ PKG_LIBS := $(shell $(PKG_CONFIG) --static --libs $(PACKAGES))
 
 RUST_LIB ?= $(PROJECT_ROOT)/target/aarch64-nintendo-switch-freestanding/release/libwodex_core.a
 ARCH := -march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE
-CPPFLAGS := -D__SWITCH__ -I$(PROJECT_ROOT)/native/include -I$(PROJECT_ROOT)/external \
+CPPFLAGS := -D__SWITCH__ -DWODEX_VERSION='"$(APP_VERSION)"' \
+  -I$(PROJECT_ROOT)/native/include -I$(PROJECT_ROOT)/external \
   -I$(DEVKITPRO)/libnx/include $(PKG_CFLAGS)
 CXXFLAGS := -std=c++17 -O2 -g -Wall -Wextra -ffunction-sections -fdata-sections \
   -pthread $(ARCH)
@@ -49,13 +54,13 @@ all: $(OUTPUT).nro
 $(BUILD_DIR):
 	mkdir -p "$@"
 
-$(BUILD_DIR)/%.o: $(PROJECT_ROOT)/native/src/%.cpp $(PROJECT_ROOT)/scripts/Makefile.switch | $(BUILD_DIR)
+$(BUILD_DIR)/%.o: $(PROJECT_ROOT)/native/src/%.cpp $(PROJECT_ROOT)/scripts/Makefile.switch $(VERSION_FILE) | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -MMD -MP -c "$<" -o "$@"
 
-$(OUTPUT).elf: $(OFILES) $(RUST_LIB) $(PROJECT_ROOT)/scripts/Makefile.switch
+$(OUTPUT).elf: $(OFILES) $(RUST_LIB) $(PROJECT_ROOT)/scripts/Makefile.switch $(VERSION_FILE)
 	$(LD) $(LDFLAGS) $(OFILES) $(LIBPATHS) $(LIBS) -o "$@"
 	$(NM) -CSn "$@" > "$(OUTPUT).lst"
-$(OUTPUT).nacp: | $(BUILD_DIR)
+$(OUTPUT).nacp: $(VERSION_FILE) | $(BUILD_DIR)
 $(OUTPUT).nro: $(OUTPUT).elf $(OUTPUT).nacp $(APP_ICON) $(REQUIRED_ROMFS_FILES) $(ROMFS_INPUTS)
 
 -include $(OFILES:.o=.d)

@@ -1,6 +1,8 @@
 #include "platform.hpp"
 #include "transport.hpp"
 #include "ui.hpp"
+#include "update_view.hpp"
+#include "updater.hpp"
 #include "wodex_core.h"
 #include <SDL.h>
 #include <SDL_ttf.h>
@@ -73,10 +75,12 @@ struct Editor {
 
 class App {
 public:
-  App(Platform &platform, SDL_Renderer *renderer, bool demo)
+  App(Platform &platform, SDL_Renderer *renderer, bool demo, std::string update_target,
+      bool show_updates)
       : platform_(platform), renderer_(renderer), canvas_(renderer, platform),
         save_path_(platform.data_dir() + "/state.json"), core_(demo ? "" : load_file(save_path_)),
-        demo_(demo) {
+        update_target_(std::move(update_target)), updater_(WODEX_VERSION, update_target_),
+        demo_(demo), updates_(show_updates) {
     refresh();
     if (demo_) {
       seed_demo();
@@ -112,10 +116,15 @@ public:
     padConfigureInput(1, HidNpadStyleSet_NpadStandard);
     padInitializeDefault(&pad_);
 #endif
+    if (updates_) {
+      notice_.clear();
+      focused_ = "update-source";
+    }
   }
 
   ~App() {
     transport_.cancel();
+    updater_.cancel();
     for (auto *controller : controllers_) {
       SDL_GameControllerClose(controller);
     }
@@ -123,6 +132,10 @@ public:
 
   bool running() const {
     return running_ && platform_.running();
+  }
+
+  std::optional<PendingUpdate> pending_install() const {
+    return pending_update_;
   }
 
   void tick() {
@@ -141,6 +154,12 @@ public:
           save();
         }
       }
+    }
+    if (updates_ && focused_ == "update-cancel" && !updater_.active()) {
+      const auto phase = updater_.status().phase;
+      focused_ = phase == UpdatePhase::Ready                                  ? "update-install"
+                 : phase == UpdatePhase::Available && !update_target_.empty() ? "update-download"
+                                                                              : "update-check";
     }
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
@@ -163,12 +182,16 @@ public:
       } else if (event.type == SDL_FINGERUP) {
         click(static_cast<int>(event.tfinger.x * 1280), static_cast<int>(event.tfinger.y * 720));
       }
+      if (!running_)
+        return;
     }
 #ifdef __SWITCH__
     padUpdate(&pad_);
     const u64 pressed = padGetButtonsDown(&pad_);
     if (pressed & HidNpadButton_Plus)
       close();
+    if (!running_)
+      return;
     if (pressed & HidNpadButton_Minus)
       toggle_settings();
     if (pressed & HidNpadButton_A)
@@ -215,7 +238,9 @@ public:
     buttons_.clear();
     canvas_.rect({0, 0, 1280, 720}, background);
     sidebar();
-    if (settings_) {
+    if (updates_) {
+      render_updates();
+    } else if (settings_) {
       render_settings();
     } else {
       render_chat();
@@ -261,19 +286,21 @@ private:
   void refresh() {
     state_ = core_.call({{"op", "snapshot"}}).at("state");
   }
-  void save() {
+  bool save() {
     if (demo_)
-      return;
+      return true;
     auto result = core_.call({{"op", "export"}});
     if (!result.value("ok", false))
-      return;
+      return false;
     if (environment_key_)
       result["data"]["settings"]["api_key"] = stored_key_;
     try {
       atomic_write(save_path_, result["data"].dump());
       last_save_ = SDL_GetTicks64();
+      return true;
     } catch (const std::exception &) {
       notice_ = "Could not save to storage. Check free space and write permissions.";
+      return false;
     }
   }
   Json mutate(const Json &command) {
@@ -351,6 +378,7 @@ private:
           if (!mutate({{"op", "new_chat"}}).value("ok", false))
             return;
           settings_ = false;
+          updates_ = false;
           scroll_ = 0;
           follow_bottom_ = true;
           draft_.clear();
@@ -380,13 +408,15 @@ private:
           return;
         mutate({{"op", "select_chat"}, {"id", id}});
         settings_ = false;
+        updates_ = false;
         scroll_ = 0;
         follow_bottom_ = true;
         draft_.clear();
       });
     }
     button("settings", "Settings", {28, 586, 216, 46}, [this] { toggle_settings(); });
-    canvas_.text(demo_ ? "OFFLINE DEMO  /  0.1" : "LOCAL HISTORY  /  0.1", 30, 647, 13, muted);
+    canvas_.text(std::string(demo_ ? "OFFLINE DEMO  /  " : "LOCAL HISTORY  /  ") + WODEX_VERSION,
+                 30, 647, 13, muted);
   }
   void render_chat() {
     const auto &chat = active_chat();
@@ -520,6 +550,14 @@ private:
   void render_settings() {
     canvas_.text("MAKE YOURSELF AT HOME", 318, 30, 15, accent);
     canvas_.text("Settings", 312, 68, 36, ink);
+    button("updates", "Updates", {1030, 64, 206, 46}, [this] {
+      updates_ = true;
+      settings_ = false;
+      confirm_delete_ = false;
+      notice_.clear();
+      focused_ = state_["settings"].value("update_repository", "").empty() ? "update-source"
+                                                                           : "update-check";
+    });
     const auto settings = state_["settings"];
     struct Row {
       std::string key, title, value;
@@ -603,6 +641,80 @@ private:
                                              : notice_;
     canvas_.text(preview(note, 230), 318, 600, 16, notice_.empty() ? muted : danger, 910);
   }
+
+  void render_updates() {
+    const auto repository = state_["settings"].value("update_repository", "");
+    auto status = updater_.status();
+    if (!updater_.active() && repository != checked_repository_) {
+      status = {};
+      status.message = "Check this release source before downloading an update.";
+    }
+    const auto update_action = [this](const std::function<void()> &action) {
+      if (demo_)
+        return;
+      try {
+        action();
+        notice_.clear();
+      } catch (const std::exception &error) {
+        notice_ = error.what();
+      }
+    };
+    UpdateActions actions;
+    actions.change_source = [this, repository] {
+      if (updater_.active() || busy() || demo_)
+        return;
+      edit("GitHub repository (owner/repo)", repository, false, [this](std::string value) {
+        const auto result =
+            mutate({{"op", "settings"}, {"settings", {{"update_repository", value}}}});
+        if (result.value("ok", false)) {
+          checked_repository_.clear();
+          focused_ = value.empty() ? "update-source" : "update-check";
+        }
+      });
+    };
+    actions.check = [this, repository, update_action] {
+      update_action([this, repository] {
+        updater_.check(repository);
+        checked_repository_ = repository;
+        focused_ = "update-cancel";
+      });
+    };
+    actions.download = [this, repository, update_action] {
+      if (repository != checked_repository_)
+        return;
+      update_action([this] {
+        updater_.download();
+        focused_ = "update-cancel";
+      });
+    };
+    actions.cancel = [this] { updater_.cancel(); };
+    actions.install = [this, repository] {
+      if (demo_ || repository != checked_repository_)
+        return;
+      if (busy()) {
+        notice_ = "Stop the current reply before installing the update.";
+        return;
+      }
+      const auto pending = updater_.pending_install();
+      if (!pending || !save())
+        return;
+      pending_update_ = pending;
+      updater_.cancel();
+      running_ = false;
+    };
+    actions.back = [this] {
+      updates_ = false;
+      settings_ = true;
+      notice_.clear();
+      focused_ = "updates";
+    };
+    render_update_page(canvas_, status, repository, WODEX_VERSION, notice_, !update_target_.empty(),
+                       demo_, actions,
+                       [this](const std::string &id, const std::string &title, SDL_Rect area,
+                              std::function<void()> action, bool primary) {
+                         button(id, title, area, std::move(action), primary);
+                       });
+  }
   void edit(const std::string &title, const std::string &initial, bool secret,
             std::function<void(std::string)> done) {
 #ifdef __SWITCH__
@@ -622,6 +734,7 @@ private:
     if (busy())
       return;
     settings_ = false;
+    updates_ = false;
     edit("Write a message", draft_, false, [this](std::string value) {
       draft_ = std::move(value);
       focused_ = "send";
@@ -881,6 +994,7 @@ private:
                          static_cast<int>(chats.size());
         mutate({{"op", "select_chat"}, {"id", chats[next]["id"]}});
         settings_ = false;
+        updates_ = false;
         draft_.clear();
         follow_bottom_ = true;
         break;
@@ -888,6 +1002,7 @@ private:
     }
   }
   void toggle_settings() {
+    updates_ = false;
     settings_ = !settings_;
     confirm_delete_ = false;
     focused_ = settings_ ? "setting-api_key" : "compose";
@@ -898,12 +1013,19 @@ private:
       mutate({{"op", "cancel"}});
   }
   void back() {
-    if (streaming())
+    if (updates_ && updater_.active())
+      updater_.cancel();
+    else if (updates_) {
+      updates_ = false;
+      settings_ = true;
+      focused_ = "updates";
+    } else if (streaming())
       stop();
     else if (settings_)
       toggle_settings();
   }
   void close() {
+    updater_.cancel();
     stop();
     save();
     running_ = false;
@@ -931,10 +1053,15 @@ private:
   std::string save_path_;
   Core core_;
   Transport transport_;
+  std::string update_target_;
+  Updater updater_;
+  std::optional<PendingUpdate> pending_update_;
+  std::string checked_repository_;
   Json state_;
   bool demo_ = false;
   bool running_ = true;
   bool settings_ = false;
+  bool updates_ = false;
   bool show_reasoning_ = false;
   bool follow_bottom_ = true;
   bool confirm_delete_ = false;
@@ -953,20 +1080,48 @@ private:
 #endif
 };
 
+std::string update_install_path(int argc, char **argv) {
+#ifdef __SWITCH__
+  if (argc < 1 || !argv || !argv[0])
+    return {};
+  const std::string path = argv[0];
+  if (path.size() < 11 || path.size() > 768 || path.compare(0, 6, "sdmc:/") != 0 ||
+      path.compare(path.size() - 4, 4, ".nro") != 0 || path.find('\\') != std::string::npos ||
+      path.find("//") != std::string::npos || path.find("/../") != std::string::npos ||
+      path.find("/./") != std::string::npos ||
+      std::any_of(path.begin(), path.end(),
+                  [](unsigned char value) { return value < 0x20 || value == 0x7f; }))
+    return {};
+  const std::string backup_suffix = ".previous.nro";
+  if (path.size() >= backup_suffix.size() &&
+      path.compare(path.size() - backup_suffix.size(), backup_suffix.size(), backup_suffix) == 0)
+    return {};
+  return path;
+#else
+  static_cast<void>(argc);
+  static_cast<void>(argv);
+  return {};
+#endif
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
   bool demo = false;
+  bool show_updates = false;
   std::string screenshot_path;
   for (int index = 1; index < argc; ++index) {
     const std::string argument = argv[index];
     if (argument == "--demo")
       demo = true;
+    else if (argument == "--updates")
+      show_updates = true;
     else if (argument == "--screenshot" && index + 1 < argc)
       screenshot_path = argv[++index];
     else if (argument == "--help") {
       std::cout << "Wodex · a native DeepSeek client for Nintendo Switch\n"
                    "  --demo                  Sample chat, no network or saves\n"
+                   "  --updates               Open update settings\n"
                    "  --screenshot FILE.bmp   Render once and save a 1280×720 image\n"
                    "Environment: DEEPSEEK_API_KEY, WODEX_DATA_DIR, WODEX_FONT, WODEX_CA_BUNDLE\n";
       return 0;
@@ -976,55 +1131,63 @@ int main(int argc, char **argv) {
     }
   }
   try {
-    std::string resource_dir;
-#ifndef __SWITCH__
-    std::unique_ptr<char, decltype(&SDL_free)> base_path(SDL_GetBasePath(), SDL_free);
-    if (!base_path)
-      throw std::runtime_error("Cannot locate the application resource directory.");
-    resource_dir = std::string(base_path.get()) + "resources";
-#endif
-    Platform platform(resource_dir);
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) != 0)
-      throw std::runtime_error(SDL_GetError());
-    if (TTF_Init() != 0)
-      throw std::runtime_error(TTF_GetError());
-    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
-    SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
-    SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS, "0");
-    std::unique_ptr<SDL_Window, decltype(&SDL_DestroyWindow)> window(
-        SDL_CreateWindow("Wodex · DeepSeek for Switch", SDL_WINDOWPOS_CENTERED,
-                         SDL_WINDOWPOS_CENTERED, 1280, 720,
-                         SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI),
-        SDL_DestroyWindow);
-    if (!window)
-      throw std::runtime_error(SDL_GetError());
-    auto *renderer_ptr =
-        SDL_CreateRenderer(window.get(), -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
-    if (!renderer_ptr)
-      renderer_ptr = SDL_CreateRenderer(window.get(), -1, SDL_RENDERER_SOFTWARE);
-    std::unique_ptr<SDL_Renderer, decltype(&SDL_DestroyRenderer)> renderer(renderer_ptr,
-                                                                           SDL_DestroyRenderer);
-    if (!renderer)
-      throw std::runtime_error(SDL_GetError());
-    SDL_RenderSetLogicalSize(renderer.get(), 1280, 720);
-    SDL_SetRenderDrawBlendMode(renderer.get(), SDL_BLENDMODE_BLEND);
+    std::optional<PendingUpdate> pending_update;
     {
-      App app(platform, renderer.get(), demo);
-      do {
-        app.tick();
-        app.render();
-        if (!screenshot_path.empty()) {
-          app.screenshot(screenshot_path);
-          break;
-        }
-        SDL_RenderPresent(renderer.get());
-        SDL_Delay(8);
-      } while (app.running());
+      std::string resource_dir;
+#ifndef __SWITCH__
+      std::unique_ptr<char, decltype(&SDL_free)> base_path(SDL_GetBasePath(), SDL_free);
+      if (!base_path)
+        throw std::runtime_error("Cannot locate the application resource directory.");
+      resource_dir = std::string(base_path.get()) + "resources";
+#endif
+      Platform platform(resource_dir);
+      if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) != 0)
+        throw std::runtime_error(SDL_GetError());
+      if (TTF_Init() != 0)
+        throw std::runtime_error(TTF_GetError());
+      SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
+      SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
+      SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS, "0");
+      std::unique_ptr<SDL_Window, decltype(&SDL_DestroyWindow)> window(
+          SDL_CreateWindow("Wodex · DeepSeek for Switch", SDL_WINDOWPOS_CENTERED,
+                           SDL_WINDOWPOS_CENTERED, 1280, 720,
+                           SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI),
+          SDL_DestroyWindow);
+      if (!window)
+        throw std::runtime_error(SDL_GetError());
+      auto *renderer_ptr = SDL_CreateRenderer(window.get(), -1,
+                                              SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+      if (!renderer_ptr)
+        renderer_ptr = SDL_CreateRenderer(window.get(), -1, SDL_RENDERER_SOFTWARE);
+      std::unique_ptr<SDL_Renderer, decltype(&SDL_DestroyRenderer)> renderer(renderer_ptr,
+                                                                             SDL_DestroyRenderer);
+      if (!renderer)
+        throw std::runtime_error(SDL_GetError());
+      SDL_RenderSetLogicalSize(renderer.get(), 1280, 720);
+      SDL_SetRenderDrawBlendMode(renderer.get(), SDL_BLENDMODE_BLEND);
+      {
+        App app(platform, renderer.get(), demo, update_install_path(argc, argv), show_updates);
+        do {
+          app.tick();
+          app.render();
+          if (!screenshot_path.empty()) {
+            app.screenshot(screenshot_path);
+            break;
+          }
+          SDL_RenderPresent(renderer.get());
+          SDL_Delay(8);
+        } while (app.running());
+        pending_update = app.pending_install();
+      }
+      renderer.reset();
+      window.reset();
+      TTF_Quit();
+      SDL_Quit();
     }
-    renderer.reset();
-    window.reset();
-    TTF_Quit();
-    SDL_Quit();
+    // Platform destruction above unmounts RomFS after App closes every font and
+    // joins its workers. The executable must not be renamed while assets use it.
+    if (pending_update)
+      install_update(*pending_update);
     return 0;
   } catch (const std::exception &error) {
     std::cerr << "Wodex: " << error.what() << '\n';

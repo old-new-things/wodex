@@ -5,8 +5,10 @@ extern crate alloc;
 mod ffi;
 mod state;
 mod stream;
+mod update;
 
 pub use state::WodexCore;
+pub use update::WodexSha256;
 
 // libnx provides these C runtime functions on Switch. Keeping allocation here
 // lets the protocol/state crate work without a custom Rust standard library.

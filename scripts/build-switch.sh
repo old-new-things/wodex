@@ -12,6 +12,16 @@ target="aarch64-nintendo-switch-freestanding"
 pkg_config="${DEVKITPRO}/portlibs/switch/bin/aarch64-none-elf-pkg-config"
 jobs="${WODEX_BUILD_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf '4\n')}"
 
+if [[ ! -f "${project_root}/VERSION" ]]; then
+  printf 'Missing VERSION file. Restore the canonical application version.\n' >&2
+  exit 1
+fi
+version="$(awk 'NR == 1 && length($0) <= 15 && $0 ~ /^(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)$/ { version=$0; next } { invalid=1 } END { if (NR == 1 && !invalid) print version }' "${project_root}/VERSION")"
+if [[ -z "${version}" ]]; then
+  printf 'VERSION must contain one stable X.Y.Z version of at most 15 characters.\n' >&2
+  exit 1
+fi
+
 if [[ ! -f "${DEVKITPRO}/libnx/switch_rules" ]]; then
   printf 'Missing devkitPro Switch SDK at %s. Install switch-dev or use devkitpro/devkita64:20260219.\n' "${DEVKITPRO}" >&2
   exit 1
@@ -60,4 +70,4 @@ cargo "+${toolchain}" build \
 
 make -f scripts/Makefile.switch -j "${jobs}" \
   RUST_LIB="${CARGO_TARGET_DIR}/${target}/release/libwodex_core.a"
-printf 'Switch homebrew built: %s/build/switch/wodex.nro\n' "${project_root}"
+printf 'Wodex %s built: %s/build/switch/wodex.nro\n' "${version}" "${project_root}"

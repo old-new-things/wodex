@@ -2,7 +2,7 @@
 
 A native DeepSeek chat client for Nintendo Switch homebrew, with a desktop build for development. Inspired by wiliwili's controller navigation and readable handheld interface.
 
-The app is implemented: it streams replies, saves conversations, supports thinking mode, includes a Chinese-capable font, and uses the Switch system keyboard. A real ARM64 `.nro` has been cross-compiled and linked. Physical Switch testing and a live request with your own DeepSeek key are still required.
+The app streams replies, saves conversations, supports thinking mode, includes a Chinese-capable font, and uses the Switch system keyboard. It also checks for verified releases and can replace its Switch NRO on exit. A real ARM64 `.nro` has been cross-compiled and linked. Physical Switch testing and a live request with your own DeepSeek key are still required.
 
 ![Desktop preview](docs/preview.png)
 
@@ -96,6 +96,14 @@ The full 16,437,364-byte font is embedded in the Switch NRO's RomFS, so Chinese 
 
 SDL_ttf/FreeType reads UTF-8 text using the font's stream API; Wodex does not manually copy the full file for every point size. Text layout and visible texture caches remain bounded. If the bundled font is absent at runtime, Switch falls back to its system-language shared font and desktop falls back to a system font. This is a whole-font fallback, not a per-character fallback chain. `WODEX_FONT` overrides the desktop choice, so that font needs the glyph coverage you want.
 
+## Self-updates
+
+Open **Settings → Updates**, set a public GitHub `owner/repo` release source, then choose **Check for updates**, **Download**, and **Install and exit**. The release source is unset by default; configure it after choosing where to publish releases. Checks are manual. Desktop builds can check release metadata; self-installation is supported on Switch.
+
+Wodex downloads a newer stable `wodex.nro` to a sibling temporary file and verifies the release's advertised size, SHA-256, executable headers and embedded assets. Installing saves conversations, closes the interface and embedded resources, preserves a launchable `.previous.nro`, and replaces the actual NRO path supplied by the loader. Reopen Wodex from hbmenu afterward. A normal exit never installs a downloaded update.
+
+The SD-card replacement uses two renames, so power interruption can require restoring the `.previous.nro` backup manually. [Update and recovery instructions](docs/updates.md) explain that boundary and the included GitHub release workflow. No repository or release is published by local builds.
+
 ## Verify
 
 ```sh
@@ -106,7 +114,7 @@ cmake --build build/desktop --parallel
 ctest --test-dir build/desktop --output-on-failure
 ```
 
-The native tests start an isolated loopback mock server. They test real curl transport against the Rust core, including fragmented UTF-8 streams, reasoning, usage, retry, HTTP errors, cancellation, queue limits, and durable storage. Font tests check Chinese and mixed-language glyph coverage and render wrapped text; the UI smoke test renders a headless frame. No tests require a real API key or spend API credits.
+The native tests start isolated loopback mock servers. They test real curl transport against the Rust core, including fragmented UTF-8 streams, reasoning, usage, retry, HTTP errors, cancellation, queue limits, and durable storage. Update tests verify downloads, checksums, release source restrictions, cancellation, backup preservation and rollback failures. Font tests check Chinese and mixed-language glyph coverage and render wrapped text; UI smoke tests render chat and update pages. No tests require a real API key or spend API credits.
 
 ## Source map
 
