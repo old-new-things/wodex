@@ -8,6 +8,8 @@ mod rich_text;
 mod view;
 
 use crate::backend::home_menu::HomeMenuPhase;
+use crate::backend::transfer::TransferExports;
+use crate::state::transfer::{PreparedTransfer, TransferChannel};
 use crate::state::{Command, SettingsPatch, WodexCore, OFFICIAL_UPDATE_REPOSITORY};
 use crate::update::UpdateChannel;
 use alloc::{
@@ -20,6 +22,8 @@ use editor::{EditResult, EditTarget, Editor};
 use host::{Host, Input, Key, TransportEvent, UpdatePhase, UpdateStatus, CTRL, GUI};
 use serde_json::Value;
 use view::{Action, Button, Page, Setting, ViewState};
+
+const STORAGE_UNCERTAIN_NOTICE: &str = "Storage could not be verified after import. Editing and saving are paused. Exit and restart Wodex; a recovery copy of your previous data was kept.";
 
 pub struct App<H: Host> {
   host: H,
@@ -35,6 +39,7 @@ pub struct App<H: Host> {
   last_save: u64,
   image_loading: bool,
   image_context: String,
+  pending_transfer: Option<(TransferChannel, PreparedTransfer)>,
 }
 
 impl<H: Host> App<H> {
@@ -56,6 +61,7 @@ impl<H: Host> App<H> {
       last_save: 0,
       image_loading: true,
       image_context: String::new(),
+      pending_transfer: None,
     };
     if demo {
       app.seed_demo();
@@ -103,7 +109,7 @@ impl<H: Host> App<H> {
   }
 
   pub fn show_home_menu(&mut self) {
-    if self.host.home_menu_active() {
+    if self.ui.storage_locked || self.host.home_menu_active() || self.host.transfer_active() {
       return;
     }
     self.ui.page = Page::HomeMenu;
@@ -115,6 +121,21 @@ impl<H: Host> App<H> {
       self.host.text_input(false);
     }
     self.check_home_menu();
+  }
+
+  pub fn show_transfer(&mut self) {
+    if self.ui.storage_locked || self.host.home_menu_active() {
+      return;
+    }
+    self.ui.page = Page::Transfer;
+    self.ui.confirm_delete = false;
+    self.ui.notice.clear();
+    self.ui.focused =
+      if self.host.transfer_active() { "transfer-stop" } else { "transfer-start" }.into();
+    self.buttons.clear();
+    if self.editor.take().is_some() {
+      self.host.text_input(false);
+    }
   }
 
   pub fn tick(&mut self) {
@@ -160,6 +181,7 @@ impl<H: Host> App<H> {
       self.ui.notice.clear();
       self.buttons.clear();
     }
+    self.poll_transfer();
     self.host.begin_frame();
     while let Some(input) = self.host.poll_input() {
       self.input(input);
@@ -173,7 +195,8 @@ impl<H: Host> App<H> {
   }
 
   pub fn render(&mut self, canvas: &mut Canvas) -> Result<(), String> {
-    let load_images = self.image_loading && !self.demo;
+    let load_images =
+      self.image_loading && !self.demo && !self.host.transfer_active() && !self.ui.storage_locked;
     let context = if load_images && self.ui.page == Page::Chat {
       self.core.state().active_id.as_str()
     } else {
@@ -193,6 +216,11 @@ impl<H: Host> App<H> {
     if !self.host.update_active() && !self.update_source_checked() {
       status = UpdateStatus::default();
     }
+    self.ui.transfer.status = self.host.transfer_status();
+    self.ui.transfer.blocked =
+      self.busy() && !self.host.transfer_active() || self.host.update_active();
+    self.ui.transfer.summary =
+      self.pending_transfer.as_ref().map(|(_, pending)| pending.summary.clone());
     let home_menu = self.host.home_menu_status();
     let home_menu_blocked = self.busy() || self.host.update_active();
     self.buttons = view::render(
@@ -224,7 +252,11 @@ impl<H: Host> App<H> {
   }
 
   fn busy(&self) -> bool {
-    self.streaming() || self.host.network_active() || self.host.home_menu_active()
+    self.ui.storage_locked
+      || self.streaming()
+      || self.host.network_active()
+      || self.host.home_menu_active()
+      || self.host.transfer_active()
   }
 
   fn update_source_checked(&self) -> bool {
@@ -262,16 +294,14 @@ impl<H: Host> App<H> {
   }
 
   fn save(&mut self) -> bool {
+    if self.ui.storage_locked {
+      self.ui.notice = STORAGE_UNCERTAIN_NOTICE.into();
+      return false;
+    }
     if self.demo {
       return true;
     }
-    let result = self.core.execute(Command::Export {}).and_then(|mut result| {
-      if self.ui.environment_key {
-        result["data"]["settings"]["api_key"] = Value::String(self.stored_key.clone());
-      }
-      serde_json::to_string(&result["data"])
-        .map_err(|_| String::from("Could not serialize history."))
-    });
+    let result = self.persisted_content();
     match result.and_then(|content| self.host.save(&content)) {
       Ok(()) => {
         self.last_save = self.host.now_ms();
@@ -285,7 +315,180 @@ impl<H: Host> App<H> {
     }
   }
 
+  fn persisted_content(&mut self) -> Result<String, String> {
+    let mut result = self.core.execute(Command::Export {})?;
+    if self.ui.environment_key {
+      result["data"]["settings"]["api_key"] = Value::String(self.stored_key.clone());
+    }
+    serde_json::to_string(&result["data"]).map_err(|_| String::from("Could not serialize history."))
+  }
+
+  fn transfer_exports(&mut self) -> Result<TransferExports, String> {
+    let snapshot = WodexCore::new(Some(&self.persisted_content()?));
+    Ok(TransferExports {
+      config: snapshot.export_transfer(TransferChannel::Config)?,
+      sessions: snapshot.export_transfer(TransferChannel::Sessions)?,
+    })
+  }
+
+  fn start_transfer(&mut self) {
+    if self.demo || self.ui.page != Page::Transfer || self.host.transfer_active() {
+      return;
+    }
+    if self.busy() || self.host.update_active() {
+      self.ui.notice = "Finish the current response or update before starting PC transfer.".into();
+      return;
+    }
+    if !self.save() {
+      return;
+    }
+    let result = self.transfer_exports().and_then(|exports| self.host.transfer_start(exports));
+    if self.update_result(result) {
+      self.host.cancel_images();
+      self.ui.focused = "transfer-stop".into();
+      self.buttons.clear();
+    }
+  }
+
+  fn stop_transfer(&mut self) {
+    self.host.transfer_stop();
+    self.pending_transfer = None;
+    self.ui.transfer.summary = None;
+    self.ui.focused = "transfer-start".into();
+    self.buttons.clear();
+  }
+
+  fn poll_transfer(&mut self) {
+    if !self.host.transfer_active() {
+      if self.pending_transfer.take().is_some() || self.ui.focused == "transfer-stop" {
+        self.ui.transfer.summary = None;
+        self.ui.focused = "transfer-start".into();
+        self.buttons.clear();
+      }
+      return;
+    }
+    if self.pending_transfer.is_some() {
+      return;
+    }
+    let Some(import) = self.host.transfer_take_import() else { return };
+    if self.ui.page != Page::Transfer || self.demo {
+      self.stop_transfer();
+      return;
+    }
+    let result = self.persisted_content().and_then(|snapshot| {
+      WodexCore::new(Some(&snapshot)).prepare_transfer(import.channel, &import.data)
+    });
+    match result {
+      Ok(prepared) => {
+        self.pending_transfer = Some((import.channel, prepared));
+        self.ui.notice.clear();
+        // Reject is the initial choice; confirming always needs a fresh action.
+        self.ui.focused = "transfer-reject".into();
+        self.buttons.clear();
+      }
+      Err(error) => {
+        self.ui.notice = format!("Import rejected: {error}");
+        self.host.transfer_resolve_import(self.ui.notice.clone(), None);
+      }
+    }
+  }
+
+  fn confirm_transfer(&mut self) {
+    if self.demo || self.ui.page != Page::Transfer || !self.host.transfer_active() {
+      return;
+    }
+    let Some((channel, mut prepared)) = self.pending_transfer.take() else { return };
+    let result = (|| -> Result<bool, String> {
+      let previous = self.persisted_content()?;
+      let exported = prepared.core.execute(Command::Export {})?;
+      let content = serde_json::to_string(&exported["data"])
+        .map_err(|_| String::from("Could not serialize imported data."))?;
+      let stored_key = prepared.core.state().settings.api_key.clone();
+      if self.ui.environment_key {
+        // Environment credentials apply only to runtime requests, never files or exports.
+        prepared.core.execute(Command::Settings {
+          settings: SettingsPatch {
+            api_key: Some(self.core.state().settings.api_key.clone()),
+            ..Default::default()
+          },
+        })?;
+      }
+      self.host.preserve(previous.as_bytes())?;
+      // A rename may have committed before syncing its directory fails. Reconcile
+      // bytes before choosing which state should remain live or be exported.
+      let durable = match self.host.save(&content) {
+        Ok(()) => true,
+        Err(error) => match self.host.load() {
+          Ok(saved) if saved == content.as_bytes() => false,
+          Ok(saved) if saved == previous.as_bytes() => return Err(error),
+          _ => {
+            self.ui.storage_locked = true;
+            return Err(error);
+          }
+        },
+      };
+      self.core = prepared.core;
+      self.stored_key = stored_key;
+      self.last_save = self.host.now_ms();
+      if channel == TransferChannel::Config {
+        self.checked_source = None;
+      } else {
+        self.ui.draft.clear();
+        self.ui.scroll = 0;
+        self.ui.follow_bottom = true;
+        self.ui.rich_text = Default::default();
+      }
+      Ok(durable)
+    })();
+    self.ui.transfer.summary = None;
+    self.ui.focused = "transfer-stop".into();
+    self.buttons.clear();
+    match result {
+      Ok(durable) => {
+        self.ui.notice = if durable {
+          format!("{} imported. A recovery copy of your previous data was kept.", channel.label())
+        } else {
+          format!("{} imported and read back, but storage durability could not be confirmed. A recovery copy of your previous data was kept.", channel.label())
+        };
+        match self.transfer_exports() {
+          Ok(exports) => self.host.transfer_resolve_import(self.ui.notice.clone(), Some(exports)),
+          Err(_) => {
+            self.stop_transfer();
+            self.ui.notice = "Import saved. Restart PC transfer to refresh the downloads.".into();
+          }
+        }
+      }
+      Err(_) => {
+        if self.ui.storage_locked {
+          self.ui.notice = STORAGE_UNCERTAIN_NOTICE.into();
+          self.host.transfer_resolve_import(self.ui.notice.clone(), None);
+          self.stop_transfer();
+          self.host.cancel_images();
+        } else {
+          self.ui.notice = "Import was not applied. Could not save safely; check free space and write permissions.".into();
+          self.host.transfer_resolve_import(self.ui.notice.clone(), None);
+        }
+      }
+    }
+  }
+
+  fn reject_transfer(&mut self) {
+    if self.pending_transfer.take().is_some() {
+      self.host.transfer_resolve_import(
+        "Import rejected on the device. Existing data was kept.".into(),
+        None,
+      );
+      self.ui.notice = "Import rejected. Existing data was kept.".into();
+      self.ui.transfer.summary = None;
+      self.ui.focused = "transfer-stop".into();
+      self.buttons.clear();
+    }
+  }
+
   fn mutate(&mut self, command: Command) -> Option<Value> {
+    if self.ui.storage_locked || self.host.transfer_active() {
+      return None;
+    }
     let result = self.core.execute(command);
     self.ui.notice = result.as_ref().err().cloned().unwrap_or_default();
     self.save();
@@ -332,6 +535,12 @@ impl<H: Host> App<H> {
   fn input(&mut self, input: Input) {
     if input == Input::Quit {
       self.close();
+      return;
+    }
+    if self.ui.storage_locked {
+      if matches!(input, Input::Gamepad(6) | Input::Key { key: Key::Escape, .. }) {
+        self.close();
+      }
       return;
     }
     if self.host.home_menu_active() {
@@ -486,7 +695,18 @@ impl<H: Host> App<H> {
   }
 
   fn dispatch(&mut self, action: Action) {
-    if self.host.home_menu_active() {
+    if self.ui.storage_locked || self.host.home_menu_active() {
+      return;
+    }
+    if self.host.transfer_active()
+      && !matches!(
+        action,
+        Action::TransferStop
+          | Action::TransferBack
+          | Action::TransferConfirm
+          | Action::TransferReject
+      )
+    {
       return;
     }
     let page = self.ui.page;
@@ -520,6 +740,17 @@ impl<H: Host> App<H> {
         self.ui.confirm_delete = false;
         self.ui.notice.clear();
         self.ui.focused = self.update_focus().into();
+      }
+      Action::Transfer => self.show_transfer(),
+      Action::TransferStart => self.start_transfer(),
+      Action::TransferStop => self.stop_transfer(),
+      Action::TransferConfirm => self.confirm_transfer(),
+      Action::TransferReject => self.reject_transfer(),
+      Action::TransferBack => {
+        self.stop_transfer();
+        self.ui.page = Page::Settings;
+        self.ui.notice.clear();
+        self.ui.focused = "transfer".into();
       }
       Action::HomeMenu => self.show_home_menu(),
       Action::HomeMenuCheck => self.check_home_menu(),
@@ -734,7 +965,7 @@ impl<H: Host> App<H> {
   }
 
   fn commit_edit(&mut self, target: EditTarget, value: String) {
-    if self.host.home_menu_active() {
+    if self.ui.storage_locked || self.host.home_menu_active() || self.host.transfer_active() {
       return;
     }
     let EditTarget::Setting(setting) = target else {
@@ -803,8 +1034,11 @@ impl<H: Host> App<H> {
   }
 
   fn toggle_settings(&mut self) {
-    if self.host.home_menu_active() {
+    if self.ui.storage_locked || self.host.home_menu_active() {
       return;
+    }
+    if self.ui.page == Page::Transfer {
+      self.stop_transfer();
     }
     self.ui.page = if self.ui.page == Page::Settings { Page::Chat } else { Page::Settings };
     self.ui.confirm_delete = false;
@@ -821,7 +1055,9 @@ impl<H: Host> App<H> {
   }
 
   fn back(&mut self) {
-    if self.ui.page == Page::HomeMenu {
+    if self.ui.page == Page::Transfer {
+      self.dispatch(Action::TransferBack);
+    } else if self.ui.page == Page::HomeMenu {
       if !self.host.home_menu_active() {
         self.dispatch(Action::HomeMenuBack);
       }
@@ -843,6 +1079,7 @@ impl<H: Host> App<H> {
       self.ui.notice = "Installing the HOME Menu tile. Keep Wodex open until it finishes.".into();
       return;
     }
+    self.stop_transfer();
     self.host.cancel_images();
     self.host.update_cancel();
     self.host.cancel();
@@ -872,6 +1109,7 @@ impl<H: Host> App<H> {
 
 impl<H: Host> Drop for App<H> {
   fn drop(&mut self) {
+    self.host.transfer_stop();
     self.host.cancel();
     self.host.update_cancel();
     if self.editor.is_some() {

@@ -4,7 +4,7 @@
 
 A native DeepSeek chat client for Nintendo Switch homebrew, with a desktop build for development. Inspired by wiliwili's controller navigation and readable handheld interface.
 
-The app streams Markdown replies with PNG/JPEG images, saves conversations, supports thinking mode, includes a Chinese-capable font, and uses the Switch system keyboard. It also checks the Versions and Nightly channels for updates and can replace its verified Switch NRO on exit. A real ARM64 `.nro` has been cross-compiled and linked. Physical Switch testing and a live request with your own DeepSeek key are still required.
+The app streams Markdown replies with PNG/JPEG images, saves conversations, supports thinking mode, includes a Chinese-capable font, and uses the Switch system keyboard. It can import and export configuration and sessions through a local PC browser. It also checks the Versions and Nightly channels for updates and can replace its verified Switch NRO on exit. A real ARM64 `.nro` has been cross-compiled and linked. Physical Switch testing and a live request with your own DeepSeek key are still required.
 
 ![Desktop preview](docs/preview.png)
 
@@ -87,7 +87,7 @@ Successful `main` builds publish timestamped nightlies to [GitHub Pages](https:/
 - History and keys entered in Settings are stored **unencrypted** locally. Desktop directories/files use user-only permissions; an SD card does not provide that isolation. The environment key override is session-only.
 - Storage is versioned and bounded. Writes preserve the previous save on interruption. Unreadable saves are copied to a unique `state.json.recovery-N` file before starting fresh; they are never silently overwritten.
 - Interrupted replies retain their partial text and can be retried from Settings. Incomplete assistant replies and prior reasoning are omitted from subsequent API context. Sending is serialized so responses cannot cross between conversations.
-- HTTPS certificates are verified, redirects are refused, and provider error bodies are not displayed. Plain HTTP is limited to loopback addresses for local tests.
+- Provider HTTPS certificates are verified, redirects are refused, and provider error bodies are not displayed. Plain HTTP provider endpoints are limited to loopback addresses for local tests. The explicitly started PC transfer listener uses local HTTP without TLS.
 - Limits: 32 conversations, 128 messages per conversation, 64 KiB per prompt, 512 KiB combined answer/reasoning, 2 MiB total message text, and 4 MiB saved JSON. Delete an older conversation when storage is full. Long answers remain fully scrollable.
 
 Current scope is text chat with Markdown and images referenced in replies. Image uploads, image generation, tool execution, search, and account login are outside this release. Switch keyboard input follows libnx's size limits; a very long existing draft cannot be reopened without shortening it.
@@ -112,6 +112,12 @@ The Rust renderer uses the bundled CJK font and stays `no_std`. Markdown images 
 
 In current nightlies, open **Settings → HOME Menu** to install a Wodex tile. It launches `sdmc:/switch/wodex/wodex.nro`, so later app updates do not require reinstalling the tile. Your custom firmware must support unsigned homebrew titles. The installer prepares its bundled forwarder on the console; no key file or separate NSP download is needed. [HOME Menu instructions](docs/home-menu.md) cover installation, removal, and the build process.
 
+## PC import and export
+
+In current nightlies, open **Settings → PC transfer → Start PC transfer**, then open the displayed address in a browser on a PC connected to the same local network. Enter the pairing code to download or upload **Configuration** and **Sessions** as separate JSON files. You can edit exported JSON on your PC before importing it.
+
+Configuration exports include the **saved API key**; the desktop environment override stays private. Sessions contain conversations and reasoning without configuration. Every import waits for confirmation on the Switch, replaces only its selected channel, and keeps a recovery copy of the previous save. Transfers use local HTTP without encryption, so use a trusted network. Stop transfer, go back, or exit Wodex when finished; it also expires after 15 minutes. [PC transfer instructions and file formats](docs/transfer.md) cover editing, limits and recovery. Physical Switch LAN transfer still needs hardware verification.
+
 ## Self-updates
 
 Open **Settings → Updates**, choose **Versions** or opt into **Nightly**, then choose **Check for updates**, **Download**, and **Install and exit**. New installations use the official `old-new-things/wodex` Pages source and Versions channel. Existing empty sources stay disabled; **Use Wodex** selects the official source. Checks are manual. Desktop builds can check both feeds; self-installation is supported on Switch.
@@ -135,18 +141,28 @@ cmake --build build/desktop --parallel
 ctest --test-dir build/desktop --output-on-failure
 ```
 
-The integration tests start isolated loopback mock servers. They drive the Rust application through SDL input and the Rust network backend's real curl bindings, and test fragmented UTF-8 streams, reasoning, usage, retry, HTTP errors, cancellation, queue limits, and durable storage. Image tests exercise actual PNG/JPEG decoding and SDL pixels, transparency, aspect ratio, duplicate requests, invalid images, download limits, credential isolation, and cancellation. Update tests exercise the Rust updater's downloads, checksums, Pages source restrictions, cancellation, backup preservation and rollback failures. Rust fault-injection tests cover short/interrupted writes, failed flushes, save rotation and rollback. Markdown tests cover parsing, streaming fragments, style-aware wrapping, tables, code indentation, bounded caches and long-message fallback. Font tests exercise the production Rust renderer with real styled Chinese and mixed-language fonts; UI smoke tests render chat and update pages. Publication tests cover artifact integrity, immutable versions, retention, archive extraction and deployment-state recovery. No tests require a real API key or spend API credits.
+The browser client is authored in TypeScript. When editing `tools/transfer-web/transfer.ts`, regenerate the committed JavaScript before building the app:
+
+```sh
+npm ci --prefix tools/transfer-web --ignore-scripts --no-audit --no-fund
+npm run --prefix tools/transfer-web build
+```
+
+CI checks that the generated file matches its source. Normal app builds use the committed assets and do not require Node.js.
+
+The integration tests start isolated loopback mock servers. They drive the Rust application through SDL input and the Rust network backend's real curl bindings, and test fragmented UTF-8 streams, reasoning, usage, retry, HTTP errors, cancellation, queue limits, and durable storage. Image tests exercise actual PNG/JPEG decoding and SDL pixels, transparency, aspect ratio, duplicate requests, invalid images, download limits, credential isolation, and cancellation. PC transfer tests exercise real local sockets, pairing, separate exports, device confirmation and storage-error reconciliation. Update tests exercise the Rust updater's downloads, checksums, Pages source restrictions, cancellation, backup preservation and rollback failures. Rust fault-injection tests cover short/interrupted writes, failed flushes, save rotation and rollback. Markdown tests cover parsing, streaming fragments, style-aware wrapping, tables, code indentation, bounded caches and long-message fallback. Font tests exercise the production Rust renderer with real styled Chinese and mixed-language fonts; UI smoke tests render chat, updates, HOME Menu and PC transfer pages. Publication tests cover artifact integrity, immutable versions, retention, archive extraction and deployment-state recovery. No tests require a real API key or spend API credits.
 
 ## Source map
 
 - `core/src/app/`: Rust views, editor, text layout/cache, platform interfaces, and tests.
-- `core/src/app.rs`: Rust application actions, navigation, chat/update coordination, and saving.
-- `core/src/backend/`: Rust HTTP policy, workers, image downloads/decoding, streaming queues, durable storage, font selection, updater, installation and rollback.
-- `core/src/`: conversation state, validation, persistence model, SSE parser, version-feed validation, and C ABI.
-- `native/`: SDL/TTF, libnx, POSIX filesystem, curl and thread/mutex bindings, input normalization, and process lifecycle.
+- `core/src/app.rs`: Rust application actions, navigation, chat/update/transfer coordination, and saving.
+- `core/src/backend/`: Rust HTTP policy, workers, image downloads/decoding, streaming queues, durable storage, local transfer server, font selection, updater, installation and rollback.
+- `core/src/`: conversation state, validation, persistence and transfer schemas, SSE parser, version-feed validation, and C ABI.
+- `native/`: SDL/TTF, libnx, POSIX filesystem/socket, curl and thread/mutex bindings, input normalization, and process lifecycle.
 - `scripts/`: desktop dependency fallback and Switch build.
 - `tools/publish-pages/`: host-only Rust publisher for the static download page and update feed.
+- `tools/transfer-web/`: TypeScript source for the browser transfer interface served by Wodex.
 - `tests/`: integration suites, local mock APIs, and test-only C++ facades that call the production Rust backends.
-- `romfs/`: bundled CJK font, license/attribution, and public CA certificates.
+- `romfs/`: bundled fonts, licenses, public CA certificates, HOME Menu template, and local transfer web assets.
 
 Wodex code is licensed under [WTFPL version 2](LICENSE). Dependencies retain their own licenses, listed in [THIRD_PARTY.md](THIRD_PARTY.md). Previously published downloads retain their accompanying license files.

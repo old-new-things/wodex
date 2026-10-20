@@ -64,6 +64,11 @@ jobs:
           sudo apt-get install -y cmake ninja-build pkg-config libsdl2-dev libsdl2-ttf-dev libcurl4-openssl-dev fonts-dejavu-core
       - name: Install Rust
         run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rustfmt,clippy
+      - name: Verify embedded browser client
+        run: |
+          npm ci --prefix tools/transfer-web --ignore-scripts --no-audit --no-fund
+          npm run --prefix tools/transfer-web build
+          git diff --exit-code -- romfs/transfer/transfer.js
       - name: Check Rust
         run: |
           cargo fmt --all -- --check

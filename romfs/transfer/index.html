@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Wodex · PC transfer</title>
+  <link rel="stylesheet" href="/transfer.css">
+  <script src="/transfer.js" defer></script>
+</head>
+<body>
+  <main>
+    <header>
+      <a class="brand" href="/" aria-label="Wodex home"><span class="mark" aria-hidden="true">w</span> Wodex</a>
+      <span class="badge">LOCAL TRANSFER</span>
+    </header>
+    <div class="intro">
+      <p class="eyebrow">YOUR SWITCH. YOUR PC.</p>
+      <h1>Move what matters.</h1>
+      <p class="subtitle">Back up your configuration and conversations, or bring them back to Wodex.</p>
+    </div>
+    <section class="pair-panel" aria-labelledby="pair-heading">
+      <div>
+        <h2 id="pair-heading">Connect to your Switch</h2>
+        <p>Open <strong>Settings → PC transfer</strong> in Wodex, then enter the pairing code shown there.</p>
+      </div>
+      <form id="pair-form">
+        <label for="pair-code">Pairing code</label>
+        <div class="pair-row">
+          <input id="pair-code" type="password" autocomplete="off" spellcheck="false"
+            autocapitalize="none" maxlength="80" placeholder="Paste the code from Wodex" required>
+          <button id="connect" type="submit">Connect</button>
+        </div>
+        <label class="show-code"><input id="show-code" type="checkbox"> Show pairing code</label>
+      </form>
+      <div id="connection" hidden>
+        <span class="connected-dot" aria-hidden="true"></span>
+        <span>Connected to Wodex</span>
+        <button id="disconnect" class="quiet" type="button">Disconnect</button>
+      </div>
+    </section>
+    <div id="channels" class="channels" hidden>
+      <section class="channel" aria-labelledby="config-heading">
+        <span class="number" aria-hidden="true">01</span>
+        <h2 id="config-heading">Configuration</h2>
+        <p>Saved API key, endpoint, model, system prompt, and preferences.</p>
+        <p class="detail">Configuration files include your saved API key. Keep the downloaded file private.</p>
+        <button class="download" data-channel="config" type="button">Download configuration</button>
+        <div class="import">
+          <label for="config-file">Import configuration JSON</label>
+          <input id="config-file" type="file" accept=".json,application/json">
+          <button class="upload secondary" data-channel="config" type="button">Send to Switch</button>
+          <p class="footnote">Replaces configuration. Keeps all sessions.</p>
+        </div>
+      </section>
+      <section class="channel" aria-labelledby="sessions-heading">
+        <span class="number" aria-hidden="true">02</span>
+        <h2 id="sessions-heading">Sessions</h2>
+        <p>All conversations, including messages, thinking text, and the selected conversation.</p>
+        <p class="detail">Session files contain your chat history. API keys and configuration are kept separate.</p>
+        <button class="download" data-channel="sessions" type="button">Download sessions</button>
+        <div class="import">
+          <label for="sessions-file">Import sessions JSON</label>
+          <input id="sessions-file" type="file" accept=".json,application/json">
+          <button class="upload secondary" data-channel="sessions" type="button">Send to Switch</button>
+          <p class="footnote">Replaces all sessions. Keeps configuration.</p>
+        </div>
+      </section>
+    </div>
+    <p id="status" role="status" aria-live="polite">Ready to pair. Keep Wodex open while transferring.</p>
+    <footer>
+      <p>Imports wait for your confirmation on the Switch. A recovery copy is saved before applying them.</p>
+      <p>Use a trusted local network. Transfers use HTTP without encryption. Nothing is sent to a cloud service.</p>
+    </footer>
+  </main>
+</body>
+</html>

@@ -67,6 +67,7 @@ int main(int argc, char **argv) {
   bool demo = false;
   bool show_updates = false;
   bool show_home_menu = false;
+  bool show_transfer = false;
   std::string screenshot_path;
   for (int index = 1; index < argc; ++index) {
     const std::string argument = argv[index];
@@ -76,6 +77,8 @@ int main(int argc, char **argv) {
       show_updates = true;
     else if (argument == "--home-menu")
       show_home_menu = true;
+    else if (argument == "--transfer")
+      show_transfer = true;
     else if (argument == "--screenshot" && index + 1 < argc)
       screenshot_path = argv[++index];
     else if (argument == "--help") {
@@ -83,6 +86,7 @@ int main(int argc, char **argv) {
                    "  --demo                  Sample chat, no network or saves\n"
                    "  --updates               Open update settings\n"
                    "  --home-menu             Open HOME Menu installation settings\n"
+                   "  --transfer              Open PC transfer settings\n"
                    "  --screenshot FILE.bmp   Render once and save a 1280×720 image\n"
                    "Environment: DEEPSEEK_API_KEY, WODEX_DATA_DIR, WODEX_FONT, WODEX_CA_BUNDLE\n";
       return 0;
@@ -95,7 +99,7 @@ int main(int argc, char **argv) {
     std::unique_ptr<WodexPendingUpdate, decltype(&wodex_pending_free)> pending_update(nullptr, wodex_pending_free);
     const auto fs_api = wodex_native_fs_api();
     const WodexBackendApi backend_api{
-      fs_api, *wodex_runtime_api(), *wodex_http_api(), wodex_home_menu_api()};
+      fs_api, *wodex_runtime_api(), *wodex_http_api(), wodex_home_menu_api(), wodex_transfer_api()};
     wodex_home_menu_configure_exit();
     const char *update_target = "";
 #ifdef __SWITCH__
@@ -144,6 +148,8 @@ int main(int argc, char **argv) {
           check_app(app != nullptr, error);
           if (show_home_menu)
             wodex_app_show_home_menu(app.get());
+          if (show_transfer)
+            wodex_app_show_transfer(app.get());
           if (!screenshot_path.empty())
             wodex_app_set_image_loading(app.get(), false);
           do {

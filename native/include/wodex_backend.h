@@ -4,6 +4,7 @@
 #include "wodex_http.h"
 #include "wodex_runtime.h"
 #include "wodex_home_menu.h"
+#include "wodex_transfer.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -14,6 +15,7 @@ typedef struct WodexBackendApi {
   WodexRuntimeApi runtime;
   WodexHttpApi http;
   const WodexHomeMenuApi *home_menu;
+  const WodexTransferApi *transfer;
 } WodexBackendApi;
 
 typedef struct WodexBuffer WodexBuffer;

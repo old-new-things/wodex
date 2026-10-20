@@ -5,6 +5,7 @@ pub(crate) mod http;
 pub(crate) mod images;
 pub(crate) mod runtime;
 pub(crate) mod storage;
+pub(crate) mod transfer;
 pub(crate) mod transport;
 pub(crate) mod updater;
 
@@ -15,6 +16,7 @@ pub struct BackendApi {
   pub runtime: runtime::RuntimeApi,
   pub http: http::HttpApi,
   pub home_menu: *const home_menu::HomeMenuApi,
+  pub transfer: *const transfer::TransferApi,
 }
 
 pub struct PendingHandle {

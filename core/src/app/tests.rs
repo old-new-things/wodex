@@ -1,6 +1,7 @@
 use super::*;
 use crate::backend::home_menu::HomeMenuStatus;
 use crate::backend::images::ImageResult;
+use crate::backend::transfer::{TransferExports, TransferImport, TransferStatus};
 use crate::state::MessageStatus;
 use alloc::{collections::VecDeque, vec};
 
@@ -20,6 +21,10 @@ struct MockHost {
   downloads: usize,
   installs: usize,
   fail_save: bool,
+  fail_load: bool,
+  save_error_after_commit: bool,
+  corrupt_save_on_error: bool,
+  save_attempts: usize,
   fail_preserve: bool,
   fail_start: bool,
   system_keyboard: bool,
@@ -35,6 +40,12 @@ struct MockHost {
   fail_home_menu_check: bool,
   fail_home_menu_install: bool,
   installation_writes: usize,
+  transfer: TransferStatus,
+  transfer_exports: Vec<TransferExports>,
+  transfer_imports: VecDeque<TransferImport>,
+  transfer_results: Vec<String>,
+  transfer_stops: usize,
+  fail_transfer_start: bool,
 }
 
 impl Host for MockHost {
@@ -48,13 +59,24 @@ impl Host for MockHost {
     self.system_keyboard
   }
   fn load(&mut self) -> Result<Vec<u8>, String> {
+    if self.fail_load {
+      return Err("Cannot read storage.".into());
+    }
     Ok(self.saved.clone())
   }
   fn save(&mut self, content: &str) -> Result<(), String> {
+    self.save_attempts += 1;
     if self.fail_save {
       return Err("disk full".into());
     }
     self.writes.push(content.into());
+    self.saved = content.as_bytes().to_vec();
+    if self.save_error_after_commit {
+      if self.corrupt_save_on_error {
+        self.saved = b"unverified content".to_vec();
+      }
+      return Err("Could not sync storage directory.".into());
+    }
     Ok(())
   }
   fn preserve(&mut self, content: &[u8]) -> Result<(), String> {
@@ -151,6 +173,36 @@ impl Host for MockHost {
     }
     self.home_menu.phase = HomeMenuPhase::Installing;
     Ok(())
+  }
+  fn transfer_status(&self) -> TransferStatus {
+    self.transfer.clone()
+  }
+  fn transfer_active(&self) -> bool {
+    self.transfer.active
+  }
+  fn transfer_start(&mut self, exports: TransferExports) -> Result<(), String> {
+    if self.fail_transfer_start {
+      return Err("Could not start PC transfer.".into());
+    }
+    self.transfer_exports.push(exports);
+    self.transfer.active = true;
+    self.transfer.url = "http://192.0.2.1:8080/".into();
+    self.transfer.code = "123456".into();
+    Ok(())
+  }
+  fn transfer_stop(&mut self) {
+    self.transfer_stops += 1;
+    self.transfer.active = false;
+    self.transfer_imports.clear();
+  }
+  fn transfer_take_import(&mut self) -> Option<TransferImport> {
+    self.transfer_imports.pop_front()
+  }
+  fn transfer_resolve_import(&mut self, message: String, exports: Option<TransferExports>) {
+    self.transfer_results.push(message);
+    if let Some(exports) = exports {
+      self.transfer_exports.push(exports);
+    }
   }
   fn begin_frame(&mut self) {}
   fn poll_input(&mut self) -> Option<Input> {
@@ -697,4 +749,324 @@ fn demo_is_offline_and_does_not_read_or_write_user_history() {
   assert!(app.host.writes.is_empty());
   assert!(app.host.recovery.is_empty());
   assert!(app.host.update_checks.is_empty());
+}
+
+fn queue_config_import(app: &mut App<MockHost>, key: &str, model: &str) {
+  let mut source = WodexCore::default();
+  source
+    .execute(Command::Settings {
+      settings: SettingsPatch {
+        api_key: Some(key.into()),
+        model: Some(model.into()),
+        ..Default::default()
+      },
+    })
+    .unwrap();
+  app.host.transfer_imports.push_back(TransferImport {
+    channel: TransferChannel::Config,
+    data: source.export_transfer(TransferChannel::Config).unwrap(),
+  });
+  app.tick();
+}
+
+#[test]
+fn pc_transfer_is_explicit_and_blocks_demo_busy_save_failed_and_stale_start() {
+  let mut app = app();
+  app.host.transfer.supported = true;
+  app.dispatch(Action::TransferStart);
+  assert!(app.host.transfer_exports.is_empty());
+  app.show_transfer();
+  assert!(app.host.transfer_exports.is_empty());
+  app.demo = true;
+  app.dispatch(Action::TransferStart);
+  app.demo = false;
+  app.host.network_active = true;
+  app.dispatch(Action::TransferStart);
+  app.host.network_active = false;
+  app.host.update.phase = UpdatePhase::Downloading;
+  app.dispatch(Action::TransferStart);
+  app.host.update.phase = UpdatePhase::Idle;
+  app.host.fail_save = true;
+  app.dispatch(Action::TransferStart);
+  assert!(app.host.transfer_exports.is_empty());
+  app.host.fail_save = false;
+  app.dispatch(Action::TransferStart);
+  assert_eq!(app.host.transfer_exports.len(), 1);
+  assert!(app.host.transfer.active);
+  assert!(app.host.image_cancellations > 0);
+  assert!(app.buttons.is_empty());
+}
+
+#[test]
+fn pc_transfer_exports_saved_key_and_keeps_environment_key_private() {
+  let mut original = WodexCore::default();
+  original
+    .execute(Command::Settings {
+      settings: SettingsPatch { api_key: Some("saved-private-key".into()), ..Default::default() },
+    })
+    .unwrap();
+  let saved = original.execute(Command::Export {}).unwrap()["data"].to_string().into_bytes();
+  let mut app = App::new(
+    MockHost { saved, environment_key: "environment-private-key".into(), ..Default::default() },
+    "0.2.1",
+    false,
+    false,
+  )
+  .unwrap();
+  app.show_transfer();
+  app.dispatch(Action::TransferStart);
+  let export = &app.host.transfer_exports[0];
+  assert!(export.config.contains("saved-private-key"));
+  assert!(!export.config.contains("environment-private-key"));
+  assert!(!export.sessions.contains("private-key"));
+  queue_config_import(&mut app, "imported-private-key", "deepseek-reasoner");
+  let summary = &app.pending_transfer.as_ref().unwrap().1.summary;
+  assert!(!summary.contains("private-key"));
+  app.dispatch(Action::TransferConfirm);
+  assert_eq!(app.core.state().settings.api_key, "environment-private-key");
+  assert_eq!(app.stored_key, "imported-private-key");
+  assert_eq!(last_saved(&app)["settings"]["api_key"], "imported-private-key");
+  assert!(!String::from_utf8_lossy(&app.host.recovery[0]).contains("environment-private-key"));
+  assert!(String::from_utf8_lossy(&app.host.recovery[0]).contains("saved-private-key"));
+  assert!(app.host.transfer_exports.last().unwrap().config.contains("imported-private-key"));
+  assert!(!app.host.transfer_exports.last().unwrap().config.contains("environment-private-key"));
+  assert!(app.host.requests.is_empty());
+}
+
+#[test]
+fn pc_config_import_requires_confirmation_and_preserves_sessions() {
+  let mut app = image_app("A saved response.");
+  let before = serde_json::to_value(&app.core.state().conversations).unwrap();
+  let old_model = app.core.state().settings.model.clone();
+  app.show_transfer();
+  app.dispatch(Action::TransferStart);
+  let writes = app.host.writes.len();
+  queue_config_import(&mut app, "replacement-key", "deepseek-reasoner");
+  assert_eq!(app.core.state().settings.model, old_model);
+  assert_eq!(app.host.writes.len(), writes);
+  assert_eq!(app.ui.focused, "transfer-reject");
+  app.dispatch(Action::TransferConfirm);
+  assert_eq!(app.core.state().settings.model, "deepseek-reasoner");
+  assert_eq!(serde_json::to_value(&app.core.state().conversations).unwrap(), before);
+  assert_eq!(app.host.writes.len(), writes + 1);
+  assert_eq!(app.host.recovery.len(), 1);
+  assert!(app.pending_transfer.is_none());
+  assert!(app.host.requests.is_empty());
+  let writes = app.host.writes.len();
+  app.dispatch(Action::TransferConfirm);
+  assert_eq!(app.host.writes.len(), writes);
+}
+
+#[test]
+fn pc_import_rejection_and_storage_failures_leave_current_data_unchanged() {
+  for failure in 0..3 {
+    let mut app = app();
+    app.show_transfer();
+    app.dispatch(Action::TransferStart);
+    let before = app.persisted_content().unwrap();
+    let writes = app.host.writes.len();
+    queue_config_import(&mut app, "replacement-key", "deepseek-reasoner");
+    match failure {
+      0 => app.dispatch(Action::TransferReject),
+      1 => {
+        app.host.fail_preserve = true;
+        app.dispatch(Action::TransferConfirm);
+      }
+      _ => {
+        app.host.fail_save = true;
+        app.dispatch(Action::TransferConfirm);
+      }
+    }
+    assert_eq!(app.persisted_content().unwrap(), before);
+    assert_eq!(app.host.writes.len(), writes);
+    assert!(app.pending_transfer.is_none());
+    assert_eq!(app.host.transfer_results.len(), 1);
+    assert_eq!(app.host.transfer_exports.len(), 1);
+  }
+}
+
+#[test]
+fn pc_sessions_import_preserves_config_and_clears_stale_draft() {
+  let mut app = app();
+  let before = serde_json::to_value(&app.core.state().settings).unwrap();
+  let mut source = WodexCore::default();
+  source.execute(Command::NewChat {}).unwrap();
+  source.execute(Command::NewChat {}).unwrap();
+  app.ui.draft = "Old conversation draft".into();
+  app.show_transfer();
+  app.dispatch(Action::TransferStart);
+  app.host.transfer_imports.push_back(TransferImport {
+    channel: TransferChannel::Sessions,
+    data: source.export_transfer(TransferChannel::Sessions).unwrap(),
+  });
+  app.tick();
+  app.dispatch(Action::TransferConfirm);
+  assert_eq!(app.core.state().conversations.len(), 3);
+  assert_eq!(serde_json::to_value(&app.core.state().settings).unwrap(), before);
+  assert!(app.ui.draft.is_empty());
+  assert!(app.host.requests.is_empty());
+}
+
+#[test]
+fn pc_transfer_freezes_mutations_and_leaving_or_exiting_closes_listener() {
+  let mut app = app();
+  app.show_transfer();
+  app.dispatch(Action::TransferStart);
+  let before = app.persisted_content().unwrap();
+  let writes = app.host.writes.len();
+  for action in [
+    Action::NewChat,
+    Action::HomeMenu,
+    Action::Updates,
+    Action::UpdateCheck,
+    Action::UpdateInstall,
+    Action::HomeMenuInstall,
+    Action::EditSetting(Setting::Model),
+    Action::Retry,
+    Action::OpenModel,
+    Action::BackToChat,
+  ] {
+    app.dispatch(action);
+  }
+  app.keyboard(Key::X, 0);
+  app.keyboard(Key::RightBracket, 0);
+  app.commit_edit(EditTarget::Setting(Setting::Model), "deepseek-reasoner".into());
+  assert_eq!(app.persisted_content().unwrap(), before);
+  assert_eq!(app.host.writes.len(), writes);
+  assert_eq!(app.ui.page, Page::Transfer);
+  assert!(app.editor.is_none());
+  assert!(app.host.update_checks.is_empty());
+  assert_eq!(app.host.home_menu_installs, 0);
+  queue_config_import(&mut app, "discarded-key", "deepseek-reasoner");
+  app.back();
+  assert!(!app.host.transfer.active);
+  assert!(app.pending_transfer.is_none());
+  assert_eq!(app.ui.page, Page::Settings);
+  app.dispatch(Action::TransferConfirm);
+  assert_eq!(app.host.writes.len(), writes);
+  app.show_transfer();
+  app.dispatch(Action::TransferStart);
+  app.close();
+  assert!(!app.host.transfer.active);
+  assert!(!app.running());
+}
+
+#[test]
+fn pc_invalid_import_is_reported_without_showing_payload_or_writing() {
+  let mut app = app();
+  app.show_transfer();
+  app.dispatch(Action::TransferStart);
+  let writes = app.host.writes.len();
+  app.host.transfer_imports.push_back(TransferImport {
+    channel: TransferChannel::Config,
+    data: "secret-payload-is-not-json".into(),
+  });
+  app.tick();
+  assert!(app.pending_transfer.is_none());
+  assert_eq!(app.host.writes.len(), writes);
+  assert_eq!(app.host.transfer_results.len(), 1);
+  assert!(!app.ui.notice.contains("secret-payload"));
+}
+
+#[test]
+fn pc_transfer_start_failure_and_expiry_remove_actionable_pending_imports() {
+  let mut app = app();
+  app.show_transfer();
+  app.host.fail_transfer_start = true;
+  app.dispatch(Action::TransferStart);
+  assert!(!app.host.transfer.active);
+  assert!(app.ui.notice.contains("Could not start"));
+  app.host.fail_transfer_start = false;
+  app.dispatch(Action::TransferStart);
+  queue_config_import(&mut app, "replacement-key", "deepseek-reasoner");
+  let before = app.persisted_content().unwrap();
+  let writes = app.host.writes.len();
+  app.host.transfer.active = false;
+  app.host.transfer.message = "PC transfer expired. Start a new session to continue.".into();
+  app.tick();
+  assert!(app.pending_transfer.is_none());
+  assert!(app.ui.transfer.summary.is_none());
+  assert!(app.buttons.is_empty());
+  assert_eq!(app.ui.focused, "transfer-start");
+  app.dispatch(Action::TransferConfirm);
+  assert_eq!(app.host.writes.len(), writes);
+  assert_eq!(app.persisted_content().unwrap(), before);
+  assert_eq!(app.host.transfer_exports.len(), 1);
+}
+
+#[test]
+fn pc_import_reconciles_committed_bytes_after_save_reports_directory_sync_failure() {
+  let mut app = app();
+  app.show_transfer();
+  app.dispatch(Action::TransferStart);
+  queue_config_import(&mut app, "committed-import-key", "deepseek-reasoner");
+  app.host.save_error_after_commit = true;
+  app.dispatch(Action::TransferConfirm);
+  assert_eq!(app.core.state().settings.model, "deepseek-reasoner");
+  assert_eq!(
+    app.core.state().settings.api_key,
+    "test-key",
+    "runtime environment override remains active"
+  );
+  assert_eq!(app.stored_key, "committed-import-key");
+  let persisted: Value = serde_json::from_slice(&app.host.saved).unwrap();
+  assert_eq!(persisted["settings"]["api_key"], "committed-import-key");
+  assert_eq!(persisted["settings"]["model"], "deepseek-reasoner");
+  assert!(app.ui.notice.contains("durability could not be confirmed"));
+  assert!(app.host.transfer_results.last().unwrap().contains("durability"));
+  assert!(app.host.transfer_exports.last().unwrap().config.contains("committed-import-key"));
+  assert_eq!(app.host.recovery.len(), 1);
+  assert!(!app.ui.storage_locked);
+  app.host.save_error_after_commit = false;
+  app.back();
+  app.close();
+  let persisted: Value = serde_json::from_slice(&app.host.saved).unwrap();
+  assert_eq!(persisted["settings"]["api_key"], "committed-import-key");
+}
+
+#[test]
+fn pc_import_unknown_commit_state_locks_all_writes_until_restart() {
+  for read_error in [false, true] {
+    let mut app = app();
+    app.show_transfer();
+    app.dispatch(Action::TransferStart);
+    let before = app.persisted_content().unwrap();
+    queue_config_import(&mut app, "uncertain-import-key", "deepseek-reasoner");
+    app.host.save_error_after_commit = true;
+    app.host.fail_load = read_error;
+    app.host.corrupt_save_on_error = !read_error;
+    app.dispatch(Action::TransferConfirm);
+    assert!(app.ui.storage_locked);
+    assert!(!app.host.transfer.active);
+    assert!(app.pending_transfer.is_none());
+    assert!(app.ui.notice.contains("Storage could not be verified"));
+    assert!(app.ui.notice.contains("recovery copy"));
+    assert!(!app.ui.notice.contains("not applied"));
+    assert_eq!(app.persisted_content().unwrap(), before);
+    assert_eq!(app.host.recovery.len(), 1);
+    assert_eq!(app.host.transfer_exports.len(), 1, "unknown data is never exported");
+    let attempts = app.host.save_attempts;
+    let unverified = app.host.saved.clone();
+    app.host.fail_load = false;
+    app.host.save_error_after_commit = false;
+    app.host.corrupt_save_on_error = false;
+    app.dispatch(Action::NewChat);
+    app.dispatch(Action::TransferStart);
+    app.commit_edit(EditTarget::Setting(Setting::Model), "changed-after-failure".into());
+    app.input(Input::Key { key: Key::Minus, modifiers: 0 });
+    app.show_home_menu();
+    app.tick();
+    let (_backend, mut canvas) = canvas::test_backend::canvas();
+    app.render(&mut canvas).unwrap();
+    assert!(app.buttons.is_empty(), "only exiting is possible while storage is uncertain");
+    assert_eq!(app.persisted_content().unwrap(), before);
+    assert!(!app.save());
+    app.input(Input::Key { key: Key::Escape, modifiers: 0 });
+    assert!(!app.running());
+    assert_eq!(
+      app.host.save_attempts, attempts,
+      "exit and autosave cannot overwrite uncertain data"
+    );
+    assert_eq!(app.host.saved, unverified);
+  }
 }

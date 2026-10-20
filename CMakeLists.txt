@@ -81,7 +81,7 @@ add_dependencies(wodex_core wodex_core_build)
 add_library(wodex_native STATIC
   native/src/platform.cpp native/src/host.cpp native/src/render_backend.cpp
   native/src/fs_bindings.cpp native/src/http_bindings.cpp native/src/runtime_bindings.cpp
-  native/src/home_menu_bindings.cpp)
+  native/src/home_menu_bindings.cpp native/src/transfer_bindings.cpp)
 target_include_directories(wodex_native PUBLIC native/include)
 target_link_libraries(wodex_native PUBLIC wodex_core CURL::libcurl Threads::Threads SDL2::SDL2 ${WODEX_TTF})
 target_compile_options(wodex_native PRIVATE -Wall -Wextra -Wpedantic)
@@ -117,6 +117,9 @@ if(BUILD_TESTING)
     "SDL_VIDEODRIVER=dummy;WODEX_DATA_DIR=${CMAKE_BINARY_DIR}/test-data")
   add_test(NAME ui_home_menu COMMAND wodex --demo --home-menu --screenshot "${CMAKE_BINARY_DIR}/home-menu.bmp")
   set_tests_properties(ui_home_menu PROPERTIES ENVIRONMENT
+    "SDL_VIDEODRIVER=dummy;WODEX_DATA_DIR=${CMAKE_BINARY_DIR}/test-data")
+  add_test(NAME ui_transfer COMMAND wodex --demo --transfer --screenshot "${CMAKE_BINARY_DIR}/transfer.bmp")
+  set_tests_properties(ui_transfer PROPERTIES ENVIRONMENT
     "SDL_VIDEODRIVER=dummy;WODEX_DATA_DIR=${CMAKE_BINARY_DIR}/test-data")
   add_test(NAME markdown_render COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_SOURCE_DIR}/tests/preview_markdown.py" "$<TARGET_FILE:wodex>"
@@ -157,4 +160,12 @@ if(BUILD_TESTING)
   target_compile_options(wodex_update_tests PRIVATE -Wall -Wextra -Wpedantic)
   add_test(NAME self_update COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_SOURCE_DIR}/tests/mock_updates.py" "$<TARGET_FILE:wodex_update_tests>")
+  add_executable(wodex_transfer_tests tests/transfer_tests.cpp)
+  target_include_directories(wodex_transfer_tests PRIVATE native/include external)
+  target_link_libraries(wodex_transfer_tests PRIVATE wodex_test_backends)
+  target_compile_options(wodex_transfer_tests PRIVATE -Wall -Wextra -Wpedantic)
+  add_dependencies(wodex_transfer_tests wodex_resources)
+  add_test(NAME pc_transfer COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_SOURCE_DIR}/tests/mock_transfer.py" "$<TARGET_FILE:wodex_transfer_tests>"
+    "${WODEX_RESOURCE_DIR}")
 endif()

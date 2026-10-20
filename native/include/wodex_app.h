@@ -21,6 +21,7 @@ bool wodex_app_running(const WodexApp *app);
 // Offline screenshot/demo callers can suppress image fetches before rendering.
 void wodex_app_set_image_loading(WodexApp *app, bool enabled);
 void wodex_app_show_home_menu(WodexApp *app);
+void wodex_app_show_transfer(WodexApp *app);
 void wodex_app_free(WodexApp *app);
 WodexPendingUpdate *wodex_app_take_pending(WodexApp *app);
 

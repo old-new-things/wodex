@@ -6,6 +6,7 @@ use crate::backend::{
   images::{ImageLoader, ImageResult},
   runtime::Runtime,
   storage::Fs,
+  transfer::{Transfer, TransferExports, TransferImport, TransferStatus},
   transport::Transport,
   updater::{PendingUpdate, Updater},
   BackendApi,
@@ -141,6 +142,12 @@ pub trait Host {
   fn home_menu_active(&self) -> bool;
   fn home_menu_check(&mut self) -> Result<(), String>;
   fn home_menu_install(&mut self) -> Result<(), String>;
+  fn transfer_status(&self) -> TransferStatus;
+  fn transfer_active(&self) -> bool;
+  fn transfer_start(&mut self, exports: TransferExports) -> Result<(), String>;
+  fn transfer_stop(&mut self);
+  fn transfer_take_import(&mut self) -> Option<TransferImport>;
+  fn transfer_resolve_import(&mut self, message: String, exports: Option<TransferExports>);
   fn begin_frame(&mut self);
   fn poll_input(&mut self) -> Option<Input>;
   fn text_input(&mut self, enabled: bool);
@@ -213,6 +220,7 @@ pub struct NativeHost {
   images: ImageLoader,
   updater: Updater,
   home_menu: HomeMenu,
+  transfer: Transfer,
   transport_events: VecDeque<TransportEvent>,
   install_supported: bool,
   pending: Option<PendingUpdate>,
@@ -259,6 +267,7 @@ impl NativeHost {
     let transport = Transport::new(runtime, http, ca_bundle.clone())?;
     let images = ImageLoader::new(runtime, http, ca_bundle.clone())?;
     let home_menu = HomeMenu::new(runtime, fs, backend.home_menu, target.clone())?;
+    let transfer = Transfer::new(runtime, backend.transfer)?;
     let updater =
       Updater::new(runtime, http, fs, version.into(), target, String::new(), ca_bundle)?;
     Ok(Self {
@@ -269,6 +278,7 @@ impl NativeHost {
       images,
       updater,
       home_menu,
+      transfer,
       transport_events: VecDeque::new(),
       install_supported,
       pending: None,
@@ -290,6 +300,7 @@ impl NativeHost {
 
 impl Drop for NativeHost {
   fn drop(&mut self) {
+    self.transfer.stop();
     self.transport.cancel();
     self.images.cancel();
     self.updater.cancel();
@@ -320,8 +331,8 @@ impl Host for NativeHost {
     self.fs.environment("DEEPSEEK_API_KEY")
   }
   fn start(&mut self, url: &str, key: &str, body: &str) -> Result<(), String> {
-    if self.home_menu.active() {
-      return Err("Wait for the HOME Menu operation to finish.".into());
+    if self.home_menu.active() || self.transfer.active() {
+      return Err("Finish PC transfer or the HOME Menu operation first.".into());
     }
     self.transport.start(url, key, body)
   }
@@ -338,7 +349,7 @@ impl Host for NativeHost {
     self.transport_events.pop_front()
   }
   fn request_image(&mut self, url: &str) -> bool {
-    !self.home_menu.active() && self.images.request(url)
+    !self.home_menu.active() && !self.transfer.active() && self.images.request(url)
   }
   fn poll_image(&mut self) -> Option<ImageResult> {
     self.images.poll()
@@ -356,14 +367,14 @@ impl Host for NativeHost {
     self.updater.active()
   }
   fn update_check(&mut self, repository: &str, channel: UpdateChannel) -> Result<(), String> {
-    if self.home_menu.active() {
-      return Err("Wait for the HOME Menu operation to finish.".into());
+    if self.home_menu.active() || self.transfer.active() {
+      return Err("Finish PC transfer or the HOME Menu operation first.".into());
     }
     self.updater.check(repository, channel)
   }
   fn update_download(&mut self) -> Result<(), String> {
-    if self.home_menu.active() {
-      return Err("Wait for the HOME Menu operation to finish.".into());
+    if self.home_menu.active() || self.transfer.active() {
+      return Err("Finish PC transfer or the HOME Menu operation first.".into());
     }
     self.updater.download()
   }
@@ -371,7 +382,7 @@ impl Host for NativeHost {
     self.updater.cancel();
   }
   fn prepare_install(&mut self) -> Result<bool, String> {
-    if self.transport.active() || self.home_menu.active() {
+    if self.transport.active() || self.home_menu.active() || self.transfer.active() {
       return Err("Wait for the current operation to finish before installing.".into());
     }
     self.pending = self.updater.pending_install();
@@ -384,18 +395,52 @@ impl Host for NativeHost {
     self.home_menu.active()
   }
   fn home_menu_check(&mut self) -> Result<(), String> {
-    if self.transport.active() || self.updater.active() || self.pending.is_some() {
+    if self.transport.active()
+      || self.updater.active()
+      || self.pending.is_some()
+      || self.transfer.active()
+    {
       return Err("Wait for the current operation before checking HOME Menu support.".into());
     }
     self.images.cancel();
     self.home_menu.check()
   }
   fn home_menu_install(&mut self) -> Result<(), String> {
-    if self.transport.active() || self.updater.active() || self.pending.is_some() {
+    if self.transport.active()
+      || self.updater.active()
+      || self.pending.is_some()
+      || self.transfer.active()
+    {
       return Err("Wait for the current operation before installing the HOME Menu tile.".into());
     }
     self.images.cancel();
     self.home_menu.install()
+  }
+  fn transfer_status(&self) -> TransferStatus {
+    self.transfer.status()
+  }
+  fn transfer_active(&self) -> bool {
+    self.transfer.active()
+  }
+  fn transfer_start(&mut self, exports: TransferExports) -> Result<(), String> {
+    if self.transport.active()
+      || self.updater.active()
+      || self.pending.is_some()
+      || self.home_menu.active()
+    {
+      return Err("Finish the current operation before starting PC transfer.".into());
+    }
+    self.images.cancel();
+    self.transfer.start(exports)
+  }
+  fn transfer_stop(&mut self) {
+    self.transfer.stop();
+  }
+  fn transfer_take_import(&mut self) -> Option<TransferImport> {
+    self.transfer.take_import()
+  }
+  fn transfer_resolve_import(&mut self, message: String, exports: Option<TransferExports>) {
+    self.transfer.resolve_import(message, exports);
   }
   fn begin_frame(&mut self) {
     unsafe { (self.api.begin_frame)(self.api.context) }

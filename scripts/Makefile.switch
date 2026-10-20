@@ -40,7 +40,7 @@ LIBPATHS := -L$(DEVKITPRO)/libnx/lib -L$(DEVKITPRO)/portlibs/switch/lib
 LIBS := -Wl,--start-group $(RUST_LIB) $(PKG_LIBS) -lpthread -lnx -lc -lm -lstdc++ -Wl,--end-group
 LD := $(CXX)
 # Only platform adapters remain native; application/views/layout are Rust.
-SOURCES := $(addprefix $(PROJECT_ROOT)/native/src/,main.cpp host.cpp render_backend.cpp platform.cpp fs_bindings.cpp http_bindings.cpp runtime_bindings.cpp home_menu_bindings.cpp)
+SOURCES := $(addprefix $(PROJECT_ROOT)/native/src/,main.cpp host.cpp render_backend.cpp platform.cpp fs_bindings.cpp http_bindings.cpp runtime_bindings.cpp home_menu_bindings.cpp transfer_bindings.cpp)
 OFILES := $(patsubst $(PROJECT_ROOT)/native/src/%.cpp,$(BUILD_DIR)/%.o,$(SOURCES))
 REQUIRED_ROMFS_FILES := $(PROJECT_ROOT)/romfs/cacert.pem \
   $(PROJECT_ROOT)/romfs/fonts/NotoSansCJKsc-Regular.otf \

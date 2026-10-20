@@ -5,6 +5,7 @@ use super::canvas::{
 use super::host::{UpdatePhase, UpdateStatus};
 use super::rich_text::RichTextCache;
 use crate::backend::home_menu::{HomeMenuPhase, HomeMenuStatus, NRO_PATH};
+use crate::backend::transfer::TransferStatus;
 use crate::state::{Message, MessageStatus, Role, State, OFFICIAL_UPDATE_REPOSITORY};
 use crate::update::UpdateChannel;
 use alloc::{format, string::String, vec::Vec};
@@ -16,6 +17,7 @@ pub enum Page {
   Settings,
   Updates,
   HomeMenu,
+  Transfer,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -55,6 +57,12 @@ pub enum Action {
   HomeMenuCheck,
   HomeMenuInstall,
   HomeMenuBack,
+  Transfer,
+  TransferStart,
+  TransferStop,
+  TransferConfirm,
+  TransferReject,
+  TransferBack,
 }
 
 #[derive(Clone, Debug)]
@@ -73,6 +81,13 @@ pub struct EditorView<'a> {
   pub select_all: bool,
 }
 
+#[derive(Default)]
+pub struct TransferView {
+  pub status: TransferStatus,
+  pub blocked: bool,
+  pub summary: Option<String>,
+}
+
 pub struct ViewState {
   pub page: Page,
   pub focused: String,
@@ -82,8 +97,10 @@ pub struct ViewState {
   pub follow_bottom: bool,
   pub scroll: i32,
   pub environment_key: bool,
+  pub storage_locked: bool,
   pub confirm_delete: bool,
   pub rich_text: RichTextCache,
+  pub transfer: TransferView,
 }
 
 impl Default for ViewState {
@@ -97,8 +114,10 @@ impl Default for ViewState {
       follow_bottom: true,
       scroll: 0,
       environment_key: false,
+      storage_locked: false,
       confirm_delete: false,
       rich_text: RichTextCache::default(),
+      transfer: TransferView::default(),
     }
   }
 }
@@ -125,31 +144,54 @@ pub fn render(
   install_supported: bool,
   editor: Option<EditorView<'_>>,
 ) -> Vec<Button> {
-  let interaction_locked =
-    matches!(home_menu.phase, HomeMenuPhase::Checking | HomeMenuPhase::Installing);
+  let interaction_locked = ui.storage_locked
+    || matches!(home_menu.phase, HomeMenuPhase::Checking | HomeMenuPhase::Installing);
+  let transfer_active = ui.transfer.status.active;
   let mut view = View {
     canvas,
     state,
     ui,
     buttons: Vec::new(),
     editor_open: editor.is_some(),
-    interaction_locked,
+    interaction_locked: interaction_locked || transfer_active,
   };
   view.canvas.rect(rect(0, 0, 1280, 720), BACKGROUND, 0);
   view.sidebar(version, demo);
+  if view.ui.page == Page::Transfer {
+    view.interaction_locked = interaction_locked;
+  }
   match view.ui.page {
     Page::Chat => view.chat(demo),
     Page::Settings => view.settings(),
     Page::Updates => view.updates(update, version, demo, install_supported),
     Page::HomeMenu => view.home_menu(home_menu, demo, home_menu_blocked),
+    Page::Transfer => view.transfer(demo),
   }
   view.canvas.rect(rect(0, 674, 1280, 46), BACKGROUND, 0);
   view.canvas.rect(rect(24, 674, 1232, 1), BORDER, 0);
-  if home_menu.phase == HomeMenuPhase::Installing {
+  if view.ui.storage_locked {
+    view.canvas.text(
+      "Storage needs attention.  Esc / +  Exit and restart Wodex",
+      28,
+      687,
+      16,
+      DANGER,
+      0,
+    );
+  } else if home_menu.phase == HomeMenuPhase::Installing {
     view.canvas.text("Installing the HOME Menu tile… Keep Wodex open.", 28, 687, 16, MUTED, 0);
   } else if interaction_locked {
     view.canvas.text("Checking HOME Menu support…", 28, 687, 16, MUTED, 0);
     view.canvas.text("+  Exit", 1168, 687, 16, MUTED, 0);
+  } else if transfer_active {
+    view.canvas.text(
+      "PC transfer is open. A  Select     B  Stop and back     +  Exit",
+      28,
+      687,
+      16,
+      MUTED,
+      0,
+    );
   } else {
     view.canvas.text(
       "A  Select     X  Write     B  Back / stop     −  Settings",
@@ -441,6 +483,7 @@ impl View<'_> {
   fn settings(&mut self) {
     self.canvas.text("MAKE YOURSELF AT HOME", 318, 30, 15, ACCENT, 0);
     self.canvas.text("Settings", 312, 68, 36, INK, 0);
+    self.button("transfer", "PC transfer", rect(600, 64, 184, 46), Action::Transfer, false);
     self.button("home-menu", "HOME Menu", rect(804, 64, 206, 46), Action::HomeMenu, false);
     self.button("updates", "Updates", rect(1030, 64, 206, 46), Action::Updates, false);
     let state = self.state;
@@ -480,7 +523,7 @@ impl View<'_> {
     self.button("delete", "Delete this chat", rect(604, 526, 254, 46), Action::DeleteChat, false);
     self.button("back", "Back to chat", rect(876, 526, 360, 46), Action::BackToChat, true);
     let note = if self.ui.notice.is_empty() {
-      "API keys and conversations stay on this device. Messages go to your configured provider."
+      "Saved locally. PC transfer shares selected files; messages go to your configured provider."
     } else {
       &self.ui.notice
     };
@@ -762,6 +805,150 @@ impl View<'_> {
       &preview(hint, 240),
       318,
       596,
+      16,
+      if self.ui.notice.is_empty() { MUTED } else { DANGER },
+      910,
+    );
+  }
+
+  fn transfer(&mut self, demo: bool) {
+    self.canvas.text("YOUR SETTINGS. YOUR CONVERSATIONS.", 318, 30, 15, ACCENT, 0);
+    self.canvas.text("PC transfer", 312, 68, 36, INK, 0);
+    self.button(
+      "transfer-back",
+      "Back to Settings",
+      rect(994, 64, 242, 46),
+      Action::TransferBack,
+      false,
+    );
+    self.canvas.text(
+      "Open Wodex in a PC browser on the same local network.",
+      318,
+      134,
+      21,
+      INK,
+      910,
+    );
+    self.canvas.text(
+      "Local HTTP is unencrypted. Configuration downloads include your saved API key.",
+      318,
+      172,
+      17,
+      MUTED,
+      910,
+    );
+    let active = self.ui.transfer.status.active;
+    if active {
+      self.canvas.rect(rect(314, 216, 922, 96), ELEVATED, 10);
+      self.canvas.text("OPEN THIS ADDRESS", 334, 231, 13, MUTED, 0);
+      self.canvas.text(&preview(&self.ui.transfer.status.url, 90), 334, 258, 24, INK, 590);
+      self.canvas.text("PAIRING CODE", 994, 231, 13, MUTED, 0);
+      let code = &self.ui.transfer.status.code;
+      let split = code.char_indices().nth(16).map(|(index, _)| index).unwrap_or(code.len());
+      self.canvas.text(&code[..split], 994, 253, 18, ACCENT, 0);
+      self.canvas.text(&code[split..], 994, 280, 18, ACCENT, 0);
+      self.canvas.rect(rect(314, 334, 922, 174), PANEL, 12);
+      if let Some(summary) = &self.ui.transfer.summary {
+        self.canvas.text("Review this import", 338, 352, 25, INK, 0);
+        self.canvas.paragraph(&preview(summary, 360), 340, 396, 17, MUTED, 860, true);
+      } else {
+        self.canvas.text("Configuration and sessions are separate", 338, 352, 25, INK, 870);
+        self.canvas.text(
+          "Download either file in your browser. Uploads wait for your confirmation here.",
+          340,
+          400,
+          18,
+          MUTED,
+          860,
+        );
+        self.canvas.text(
+          "Import replaces only the selected channel. Keep Wodex on this screen.",
+          340,
+          450,
+          17,
+          MUTED,
+          860,
+        );
+      }
+      self.button(
+        "transfer-stop",
+        "Stop transfer",
+        rect(314, 532, 232, 50),
+        Action::TransferStop,
+        false,
+      );
+      if self.ui.transfer.summary.is_some() {
+        self.button(
+          "transfer-reject",
+          "Reject import",
+          rect(566, 532, 240, 50),
+          Action::TransferReject,
+          false,
+        );
+        self.button(
+          "transfer-confirm",
+          "Confirm replacement",
+          rect(826, 532, 410, 50),
+          Action::TransferConfirm,
+          true,
+        );
+      }
+    } else {
+      for (x, title, description) in [
+        (
+          314,
+          "Configuration",
+          "Provider, saved API key, model, assistant instructions and update settings.",
+        ),
+        (784, "Sessions", "All conversations, including messages, reasoning and the active chat."),
+      ] {
+        self.canvas.rect(rect(x, 222, 452, 176), PANEL, 12);
+        self.canvas.text(title, x + 24, 242, 25, INK, 0);
+        self.canvas.paragraph(description, x + 24, 291, 18, MUTED, 404, true);
+      }
+      self.canvas.text(
+        "Each import replaces one channel and keeps a recovery copy of your previous data.",
+        318,
+        430,
+        18,
+        MUTED,
+        910,
+      );
+      self.canvas.text(
+        "Use a trusted network. Pair with the code shown after starting transfer.",
+        318,
+        473,
+        17,
+        MUTED,
+        910,
+      );
+      if !demo && self.ui.transfer.status.supported && !self.ui.transfer.blocked {
+        self.button(
+          "transfer-start",
+          "Start PC transfer",
+          rect(314, 532, 340, 50),
+          Action::TransferStart,
+          true,
+        );
+      }
+    }
+    let hint = if !self.ui.notice.is_empty() {
+      self.ui.notice.as_str()
+    } else if demo {
+      "Offline demo: PC transfer is disabled."
+    } else if self.ui.transfer.blocked {
+      "Finish the current response or update before starting PC transfer."
+    } else if !self.ui.transfer.status.supported {
+      "PC transfer is unavailable on this platform."
+    } else if !self.ui.transfer.status.message.is_empty() {
+      &self.ui.transfer.status.message
+    } else {
+      "Stopping transfer closes the local server and invalidates its pairing code."
+    };
+    self.canvas.text(
+      &preview(hint, 240),
+      318,
+      600,
       16,
       if self.ui.notice.is_empty() { MUTED } else { DANGER },
       910,
@@ -1102,6 +1289,67 @@ mod tests {
         backend.drawn_text
       );
     }
+  }
+
+  #[test]
+  fn transfer_controls_require_explicit_start_and_active_import_confirmation() {
+    let (backend, mut canvas) = canvas();
+    let state = WodexCore::default().state().clone();
+    let mut ui = ViewState { page: Page::Transfer, ..ViewState::default() };
+    ui.transfer.status.supported = true;
+    for (demo, blocked, supported) in
+      [(false, false, true), (true, false, true), (false, true, true), (false, false, false)]
+    {
+      ui.transfer.blocked = blocked;
+      ui.transfer.status.supported = supported;
+      let buttons = render(
+        &mut canvas,
+        &state,
+        &mut ui,
+        &status(UpdatePhase::Idle),
+        &HomeMenuStatus::default(),
+        false,
+        "0.2.1",
+        demo,
+        true,
+        None,
+      );
+      assert_eq!(
+        buttons.iter().any(|button| button.action == Action::TransferStart),
+        !demo && !blocked && supported
+      );
+      assert!(!buttons.iter().any(|button| button.action == Action::TransferConfirm));
+    }
+    ui.transfer.status.active = true;
+    ui.transfer.status.supported = true;
+    ui.transfer.blocked = false;
+    ui.transfer.status.url = "http://192.0.2.1:8080/".into();
+    ui.transfer.status.code = "0123456789abcdef9876543210fedcba".into();
+    ui.transfer.summary =
+      Some("Replace all sessions with 2 conversations. Configuration remains unchanged.".into());
+    let buttons = render(
+      &mut canvas,
+      &state,
+      &mut ui,
+      &status(UpdatePhase::Idle),
+      &HomeMenuStatus::default(),
+      false,
+      "0.2.1",
+      false,
+      true,
+      None,
+    );
+    assert!(buttons.iter().any(|button| button.action == Action::TransferConfirm));
+    assert!(buttons.iter().any(|button| button.action == Action::TransferReject));
+    assert!(buttons.iter().any(|button| button.action == Action::TransferStop));
+    assert!(!buttons.iter().any(|button| matches!(
+      button.action,
+      Action::NewChat | Action::Settings | Action::SelectChat(_)
+    )));
+    assert!(backend.drawn_text.iter().any(|text| text.contains("saved API key")));
+    assert!(backend.drawn_text.iter().any(|text| text.contains("192.0.2.1")));
+    assert!(backend.drawn_text.iter().any(|text| text == "0123456789abcdef"));
+    assert!(backend.drawn_text.iter().any(|text| text == "9876543210fedcba"));
   }
 
   #[test]

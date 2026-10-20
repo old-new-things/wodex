@@ -4,6 +4,8 @@ use alloc::{format, string::String, vec, vec::Vec};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+pub(crate) mod transfer;
+
 pub(crate) const MAX_SAVED_BYTES: usize = 4 * 1024 * 1024;
 pub(crate) const MAX_COMMAND_BYTES: usize = 256 * 1024;
 pub(crate) const MAX_FEED_BYTES: usize = 1024 * 1024;
@@ -214,25 +216,7 @@ impl WodexCore {
     match command {
       Command::Snapshot {} => Ok(json!({"ok": true, "state": self.state})),
       Command::Export {} => {
-        if let Some(error) = &self.load_error {
-          return Err(format!("Export is disabled to preserve unreadable saved data. {error}"));
-        }
-        let mut conversations = self.state.conversations.clone();
-        // Persisting a running request must never restore a fake live stream.
-        for conversation in &mut conversations {
-          for message in &mut conversation.messages {
-            if message.status == MessageStatus::Streaming {
-              message.status = MessageStatus::Interrupted;
-            }
-          }
-        }
-        let storage = Storage {
-          version: 1,
-          settings: self.state.settings.clone(),
-          conversations,
-          active_id: self.state.active_id.clone(),
-          next_id: self.next_id,
-        };
+        let storage = self.storage_snapshot()?;
         let data = serde_json::to_value(storage).map_err(|_| "Could not serialize saved data.")?;
         if serde_json::to_vec(&data).map_err(|_| "Could not serialize saved data.")?.len()
           > MAX_SAVED_BYTES
@@ -615,8 +599,28 @@ impl WodexCore {
     if saved_json.len() > MAX_SAVED_BYTES {
       return Err("The save exceeds 4 MiB.".into());
     }
-    let mut saved: Storage = serde_json::from_str(saved_json)
+    let saved: Storage = serde_json::from_str(saved_json)
       .map_err(|_| String::from("Invalid storage JSON or fields."))?;
+    *self = Self::from_storage(saved)?;
+    Ok(())
+  }
+
+  fn storage_snapshot(&self) -> Result<Storage, String> {
+    if let Some(error) = &self.load_error {
+      return Err(format!("Export is disabled to preserve unreadable saved data. {error}"));
+    }
+    let mut conversations = self.state.conversations.clone();
+    normalize_interrupted(&mut conversations);
+    Ok(Storage {
+      version: 1,
+      settings: self.state.settings.clone(),
+      conversations,
+      active_id: self.state.active_id.clone(),
+      next_id: self.next_id,
+    })
+  }
+
+  fn from_storage(mut saved: Storage) -> Result<Self, String> {
     if saved.version != 1 {
       return Err("Unsupported storage version.".into());
     }
@@ -629,15 +633,8 @@ impl WodexCore {
     let mut total_text = 0;
     let mut encoded_text_bytes = 0;
     for (index, conversation) in saved.conversations.iter().enumerate() {
-      let id = conversation
-        .id
-        .strip_prefix("chat-")
-        .and_then(|id| id.parse::<u64>().ok())
-        .filter(|&id| id > 0)
-        .ok_or("Invalid conversation ID.")?;
-      if conversation.id != format!("chat-{id}")
-        || saved.conversations[..index].iter().any(|previous| previous.id == conversation.id)
-      {
+      let id = conversation_id(&conversation.id)?;
+      if saved.conversations[..index].iter().any(|previous| previous.id == conversation.id) {
         return Err("Duplicate or invalid conversation ID.".into());
       }
       highest_id = highest_id.max(id);
@@ -697,27 +694,53 @@ impl WodexCore {
     {
       return Err("Invalid storage size, active conversation, or next ID.".into());
     }
-    let mut interrupted = false;
-    for conversation in &mut saved.conversations {
-      for message in &mut conversation.messages {
-        if message.status == MessageStatus::Streaming {
-          message.status = MessageStatus::Interrupted;
-          interrupted = true;
-        }
+    let interrupted = normalize_interrupted(&mut saved.conversations);
+    if serde_json::to_vec(&saved).map_err(|_| "Could not serialize saved data.")?.len()
+      > MAX_SAVED_BYTES
+    {
+      return Err("Saved data is too large. Delete an older conversation.".into());
+    }
+    Ok(Self {
+      state: State {
+        settings: saved.settings,
+        conversations: saved.conversations,
+        active_id: saved.active_id,
+        is_streaming: false,
+        error: interrupted
+          .then(|| String::from("The previous response was interrupted. You can retry.")),
+      },
+      next_id: saved.next_id,
+      stream: None,
+      load_error: None,
+      encoded_text_bytes,
+    })
+  }
+}
+
+fn conversation_id(value: &str) -> Result<u64, String> {
+  let id = value
+    .strip_prefix("chat-")
+    .and_then(|id| id.parse::<u64>().ok())
+    .filter(|&id| id > 0)
+    .ok_or("Invalid conversation ID.")?;
+  if value != format!("chat-{id}") {
+    return Err("Invalid conversation ID.".into());
+  }
+  Ok(id)
+}
+
+// A saved or transferred response cannot retain a live stream after restoration.
+fn normalize_interrupted(conversations: &mut [Conversation]) -> bool {
+  let mut interrupted = false;
+  for conversation in conversations {
+    for message in &mut conversation.messages {
+      if message.status == MessageStatus::Streaming {
+        message.status = MessageStatus::Interrupted;
+        interrupted = true;
       }
     }
-    self.state = State {
-      settings: saved.settings,
-      conversations: saved.conversations,
-      active_id: saved.active_id,
-      is_streaming: false,
-      error: interrupted
-        .then(|| String::from("The previous response was interrupted. You can retry.")),
-    };
-    self.next_id = saved.next_id;
-    self.encoded_text_bytes = encoded_text_bytes;
-    Ok(())
   }
+  interrupted
 }
 
 fn json_text_bytes(text: &str) -> usize {
