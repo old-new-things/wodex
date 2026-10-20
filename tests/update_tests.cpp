@@ -359,7 +359,9 @@ void test_nightly_channel(const std::string& base) {
   check(wait(updater).phase == UpdatePhase::Available, "A repeat nightly check failed after changing channels.");
   Updater newer{"0.4.0", "", base};
   newer.check("fixture/nightly-good", UpdateChannel::Nightly);
-  check(wait(newer).phase == UpdatePhase::Current, "The nightly channel offered a semantic version downgrade.");
+  check(wait(newer).phase == UpdatePhase::Available, "A development build could not select a nightly with a lower base version.");
+  newer.check("fixture/nightly-good", UpdateChannel::Version);
+  check(wait(newer).phase == UpdatePhase::Current, "A development build selected a lower Versions build.");
   Updater empty{"0.3.0", "", base};
   empty.check("fixture/nightly-empty", UpdateChannel::Nightly);
   check(wait(empty).phase == UpdatePhase::Current, "An empty nightly channel offered an update.");

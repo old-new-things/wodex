@@ -2,7 +2,7 @@
 name = "wodex-publish-pages"
 version = "0.1.0"
 edition = "2021"
-license = "MIT"
+license = "WTFPL"
 description = "Verified static download catalog for Wodex GitHub Pages"
 
 [dependencies]

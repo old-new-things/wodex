@@ -463,12 +463,15 @@ fn html(catalog: &Catalog) -> String {
     (
       Channel::Nightly,
       "Nightly",
-      "Recent successful builds from the main branch. Opt in to Nightly in the app's update settings. Dates are in UTC.",
+      format!(
+        "Recent successful builds from the main branch. Opt in to Nightly in the app's update settings. \
+        At most {NIGHTLIES} nightlies are kept; older downloads are removed automatically. Dates are in UTC."
+      ),
     ),
     (
       Channel::Version,
       "Versions",
-      "Explicitly tagged versions, listed from newest version to oldest.",
+      "Explicitly tagged versions, listed from newest version to oldest.".into(),
     ),
   ] {
     content.push_str(&format!(

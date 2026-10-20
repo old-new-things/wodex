@@ -7,13 +7,15 @@ New installations use `old-new-things/wodex` and the **Versions** channel. Exist
 ## Install an update
 
 1. Open Settings → Updates, select **Versions** or **Nightly**, and choose **Check for updates**.
-2. Review the newer version, then choose **Download**.
+2. Review the selected build, then choose **Download**.
 3. Wait for verification to complete. Choose **Install and exit** to replace the running NRO.
 4. Launch Wodex again from hbmenu. Installation exits the app; it does not restart it automatically.
 
-Wodex 0.2.1 adds the optional Nightly channel. Wodex 0.2.0 can update through Versions normally. If you installed the early nightly from commit `52dd555`, which displayed the provisional version 0.3.0, install 0.2.1 manually once: close Wodex, copy its `wodex.nro` from the [Versions downloads](https://old-new-things.github.io/wodex/#version) over your existing NRO, and reopen it. Preserve the application data directory. That nightly's existing updater rejects lower version numbers; changing the feed cannot override that check.
+Wodex 0.2.1 adds the optional Nightly channel. Current nightlies contain the timestamp-based selection and return-to-Versions behavior described below. The fixed 0.2.1 download retains its original comparison rules; select Nightly to receive the new behavior. Wodex 0.2.0 can update to 0.2.1 through Versions first.
 
-The app reads `https://old-new-things.github.io/wodex/updates/stable.json` when configured for this repository. The feed uses `schema_version: 1`, `channel: "version"` and a required `build` field. Before the first explicit version is published, `build` is `null` and the app reports no newer version. Otherwise it contains:
+If you installed the early nightly from commit `52dd555`, which displayed the provisional version 0.3.0, install a current nightly manually once: close Wodex, copy its `wodex.nro` from the [Nightly downloads](https://old-new-things.github.io/wodex/#nightly) over your existing NRO, and reopen it. Preserve the application data directory. That older executable rejects lower version numbers; it needs this manual replacement to receive the new comparison code. Afterward, choosing Versions can install the latest published version even if its version number is lower.
+
+The app reads `https://old-new-things.github.io/wodex/updates/stable.json` when configured for this repository. The feed uses `schema_version: 1`, `channel: "version"` and a required `build` field. Before the first explicit version is published, `build` is `null` and no build is offered. Otherwise it contains:
 
 ```json
 {
@@ -31,7 +33,7 @@ The app reads `https://old-new-things.github.io/wodex/updates/stable.json` when 
 
 The size and digest above are illustrative. Publication generates the real values from the verified NRO.
 
-The Versions feed selects a newer canonical `X.Y.Z` version. When returning from Nightly, the final version with the same version number is also eligible. Older version numbers are never selected. The stable feed retains its original schema so Wodex 0.2.0 can update to a version with channel selection.
+The Versions feed selects the highest published canonical `X.Y.Z` version. From an installed nightly, switching to Versions offers that build regardless of whether its version number is lower, equal, or higher. From an installed Versions build, only a newer version number is offered. This prevents repeated installation after returning to Versions. The stable feed retains its original schema so Wodex 0.2.0 can update to a version with channel selection.
 
 Nightly reads `https://old-new-things.github.io/wodex/updates/nightly.json`. Its schema uses `schema_version: 1`, `channel: "nightly"` and a required `build` field, which is `null` before a nightly exists. A populated build has the same fields as the version feed, plus:
 
@@ -43,7 +45,7 @@ Nightly reads `https://old-new-things.github.io/wodex/updates/nightly.json`. Its
 }
 ```
 
-The nightly URL must be `https://old-new-things.github.io/wodex/builds/nightly/<id>/wodex.nro`. The ID must match the valid UTC timestamp and the first seven characters of the full lowercase commit SHA. Published NROs embed their own channel, timestamp and commit. For the same version number, the app selects only a later nightly, so checking again after installation does not offer the same build. Nightly IDs break equal-timestamp ties in the same order as the publisher. Switching from Versions requires a strictly newer timestamp for a nightly of the same version. Local development binaries without a publication identity may opt into the latest nightly.
+The nightly URL must be `https://old-new-things.github.io/wodex/builds/nightly/<id>/wodex.nro`. The ID must match the valid UTC timestamp and the first seven characters of the full lowercase commit SHA. Published NROs embed their own channel, timestamp and commit. The app selects a later nightly by timestamp, independently of semantic version: a newer nightly with a lower version number is eligible, and an older nightly with a higher version number is not. Nightly IDs break equal-timestamp ties for installed nightlies in the same order as the publisher. Switching from Versions requires a strictly newer nightly timestamp. Local development binaries without a publication identity may opt into the latest nightly. Checking again after installation does not offer the same build.
 
 Both feeds require a size from the minimum NRO header through 128 MiB and a valid SHA-256 digest. The URL must match the configured project's exact HTTPS Pages path for the selected channel and build. Unknown schema fields, mismatched channels, malformed metadata and redirects are rejected. Downloads must match both the advertised byte count and SHA-256 and pass NRO/ASET/RomFS validation before becoming installable. The adjacent `.sha256` file supports manual verification; the app uses the digest in the selected feed.
 
@@ -69,7 +71,7 @@ The build identity job obtains the source workflow attempt's start time and comm
 
 `VERSION` is the canonical application version, used by both the desktop version string and Switch NACP metadata. It must contain one `X.Y.Z` version of at most 15 ASCII characters, without leading zeroes in a component. An explicit version is published by pushing a tag containing `v` followed by that exact value. The tagged commit must already be reachable from `main`.
 
-Normal development keeps the version number unchanged and publishes timestamped nightlies. Change the version number when preparing an intentional fixed-version publication; this updater change is version 0.2.1.
+Normal development keeps the version number unchanged and publishes timestamped nightlies. Change the version number when preparing an intentional fixed-version publication. Current development uses the 0.2.1 base version.
 
 After committing and pushing the version's source to `main`, create and push its tag:
 
@@ -80,13 +82,13 @@ git push origin "v$(cat VERSION)"
 
 For example, `v0.2.0` publishes to `builds/version/0.2.0/`. The version feed selects the highest published semantic version. Publishing an older tag does not downgrade that selection. An existing version cannot be assigned different download bytes, even after its downloadable files have been pruned; retained digest records enforce this. Increment `VERSION` before publishing changed files.
 
-Each build includes `wodex.nro`, its checksum, `VERSION`, the application license, third-party notices, a checksummed `licenses.tar.gz`, and Noto font license/attribution. The font and its notices also remain embedded in the NRO. Generated publication metadata omits developer identities, personal paths and GitHub actor fields; required upstream license credits remain. Public GitHub activity, including workflow runs and pushes, can still identify accounts; this publication method does not provide account anonymity.
+Each build includes `wodex.nro`, its checksum, `VERSION`, the application license, third-party notices, a checksummed `licenses.tar.gz`, and Noto font license/attribution. New builds use WTFPL version 2 for Wodex code; dependencies retain their original licenses, and already published downloads keep their accompanying license files. The font and its notices also remain embedded in the NRO. Generated publication metadata omits developer identities, personal paths and GitHub actor fields; required upstream license credits remain. Public GitHub activity, including workflow runs and pushes, can still identify accounts; this publication method does not provide account anonymity.
 
 ## Publication state and recovery
 
 Publication is serialized so each job restores the last accepted Pages deployment snapshot before adding its build. The host Rust publisher verifies the restored catalog and every retained file, generates the complete replacement site, and uploads it for deployment. The publisher is a separate `std` tool; the Switch application remains `no_std` plus `alloc`.
 
-The site retains up to seven newest nightlies and ten highest versions. A 450 MiB download budget may remove additional older builds while preserving the newest build in each channel. Version digest records survive pruning.
+The site retains up to seven newest nightlies by timestamp and ten highest versions. Each publication removes older nightly entries and their download files from the new site snapshot. A 450 MiB download budget may remove additional older builds while preserving the newest build in each channel. Version digest records survive pruning.
 
 Recovery snapshots are stored as attempt-specific Actions artifacts. After deployment, the publication workflow checks the live catalog, both update feeds, page, and newest downloads against its generated files. It retries for up to 11 minutes to allow CDN propagation. Only successful public verification permits cleanup, which keeps the current and preceding snapshots with 90-day retention. Successful daily publications refresh this history.
 

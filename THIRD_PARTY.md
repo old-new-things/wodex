@@ -1,5 +1,7 @@
 # Third-party components
 
+Wodex's original code is copyright © 2026 Wodex contributors and licensed under [WTFPL version 2](LICENSE). Third-party components retain their own licenses and required notices below.
+
 Switch binary artifacts include `licenses.tar.gz`, containing the linked native library/runtime and Rust dependency notices indexed in [`licenses/README.md`](licenses/README.md). Preserve that archive and this document when redistributing a binary.
 
 - [nlohmann/json 3.12.0](https://github.com/nlohmann/json/tree/v3.12.0): test harnesses only; vendored single header, MIT license in `external/nlohmann/LICENSE.MIT`. Header SHA-256: `aaf127c04cb31c406e5b04a63f1ae89369fccde6d8fa7cdda1ed4f32dfc5de63`. The application uses Rust `serde_json`.

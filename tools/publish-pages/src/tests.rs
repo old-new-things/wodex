@@ -299,21 +299,60 @@ fn pruned_versions_keep_immutable_records_and_latest_versions_are_retained() {
 }
 
 #[test]
-fn nightlies_retain_seven_and_never_populate_stable_feed() {
+fn nightlies_retain_seven_by_timestamp_without_changing_versions() {
   let fixture = Fixture::new();
-  let mut options = fixture.options(fixture.artifact("artifact", "0.2.0", 0), "site0");
-  let mut result = Catalog::default();
+  let mut options = fixture.options(fixture.artifact("artifact", "0.2.1", 0), "version");
+  options.channel = Channel::Version;
+  options.tag = Some("v0.2.1".into());
+  let original = fixture.publish(&options).unwrap();
+  let original_feed = stable(&original, &options.base_url);
+  options.previous_dir = Some(options.output_dir.clone());
+  options.channel = Channel::Nightly;
+  options.tag = None;
+  let mut result = original.clone();
   for index in 1..=9 {
+    // A newer nightly can have a lower base version than the preceding build.
+    fs::write(options.artifact_dir.join("VERSION"), format!("0.{}.0\n", 10 - index)).unwrap();
     options.timestamp = format!("2026-10-{index:02}T00:00:00Z");
     options.output_dir = fixture.0.join(format!("site{index}"));
     result = fixture.publish(&options).unwrap();
     options.previous_dir = Some(options.output_dir.clone());
   }
-  assert_eq!(result.builds.len(), 7);
-  assert_eq!(result.builds[0].id, "20261009T000000Z-0123456");
-  assert_eq!(result.builds[6].id, "20261003T000000Z-0123456");
-  assert!(!options.output_dir.join("builds/nightly/20261001T000000Z-0123456").exists());
-  assert_eq!(stable(&result, &options.base_url)["build"], serde_json::Value::Null);
+  // A delayed older workflow must not restore an expired nightly or change the feed.
+  fs::write(options.artifact_dir.join("VERSION"), "99.0.0\n").unwrap();
+  options.timestamp = "2026-10-02T12:00:00Z".into();
+  options.output_dir = fixture.0.join("delayed");
+  let before_delayed = result.clone();
+  result = fixture.publish(&options).unwrap();
+  assert_eq!(result, before_delayed);
+
+  let nightlies: Vec<_> =
+    result.builds.iter().filter(|build| build.channel == Channel::Nightly).collect();
+  assert_eq!(nightlies.len(), 7);
+  assert_eq!(nightlies[0].id, "20261009T000000Z-0123456");
+  assert_eq!(nightlies[6].id, "20261003T000000Z-0123456");
+  let actual_directories: BTreeSet<_> = fs::read_dir(options.output_dir.join("builds/nightly"))
+    .unwrap()
+    .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+    .collect();
+  let expected_directories = nightlies.iter().map(|build| build.id.clone()).collect();
+  assert_eq!(actual_directories, expected_directories, "Expired payloads must also be removed.");
+  assert!(
+    fixture.0.join("site1/builds/nightly/20261001T000000Z-0123456/wodex.nro").is_file(),
+    "Previously accepted snapshots remain intact for recovery."
+  );
+  let published_feed: serde_json::Value =
+    serde_json::from_slice(&fs::read(options.output_dir.join("updates/nightly.json")).unwrap())
+      .unwrap();
+  assert_eq!(published_feed, nightly(&result, &options.base_url));
+  assert_eq!(published_feed["build"]["id"], nightlies[0].id);
+  assert_eq!(published_feed["build"]["version"], "0.1.0");
+  assert_eq!(stable(&result, &options.base_url), original_feed);
+  assert_eq!(result.version_locks, original.version_locks);
+  assert_eq!(
+    result.builds.iter().find(|build| build.channel == Channel::Version),
+    original.builds.first(),
+  );
 }
 
 #[test]
@@ -419,6 +458,7 @@ fn urls_tags_commits_and_html_are_safe() {
   let page = html(&catalog);
   assert_eq!(page.matches("<section ").count(), 2);
   assert!(page.contains("<h2 id=\"nightly\">Nightly</h2>"));
+  assert!(page.contains("At most 7 nightlies are kept; older downloads are removed automatically."));
   assert!(page.contains("<h2 id=\"version\">Versions</h2>"));
   assert!(!page.contains("<script"));
   assert!(!page.contains("https://"));

@@ -4,7 +4,7 @@
 
 A native DeepSeek chat client for Nintendo Switch homebrew, with a desktop build for development. Inspired by wiliwili's controller navigation and readable handheld interface.
 
-The app streams replies, saves conversations, supports thinking mode, includes a Chinese-capable font, and uses the Switch system keyboard. It also checks for newer versioned builds and can replace its verified Switch NRO on exit. A real ARM64 `.nro` has been cross-compiled and linked. Physical Switch testing and a live request with your own DeepSeek key are still required.
+The app streams replies, saves conversations, supports thinking mode, includes a Chinese-capable font, and uses the Switch system keyboard. It also checks the Versions and Nightly channels for updates and can replace its verified Switch NRO on exit. A real ARM64 `.nro` has been cross-compiled and linked. Physical Switch testing and a live request with your own DeepSeek key are still required.
 
 ![Desktop preview](docs/preview.png)
 
@@ -104,11 +104,11 @@ SDL_ttf/FreeType reads UTF-8 text using the font's stream API; Wodex does not ma
 
 Open **Settings → Updates**, choose **Versions** or opt into **Nightly**, then choose **Check for updates**, **Download**, and **Install and exit**. New installations use the official `old-new-things/wodex` Pages source and Versions channel. Existing empty sources stay disabled; **Use Wodex** selects the official source. Checks are manual. Desktop builds can check both feeds; self-installation is supported on Switch.
 
-Nightlies carry a UTC build timestamp and commit so the app can detect newer builds sharing the same version number. Returning to Versions allows the final version matching an installed nightly; older version numbers are never selected.
+Nightlies are ordered by their UTC build timestamps, independently of version numbers. From an installed nightly, choosing Versions offers the latest published version even when its version number is lower. An installed Versions build still selects only newer versions. These rules are available in current nightlies; the fixed 0.2.1 download retains its original comparison rules.
 
-If you installed the early nightly labeled 0.3.0, [install 0.2.1 manually once](docs/updates.md#install-an-update). Existing 0.2.0 installations can update through Versions.
+If you installed the early nightly labeled 0.3.0, [install a current nightly manually once](docs/updates.md#install-an-update) to receive the new comparison rules. Existing 0.2.0 installations can update to 0.2.1 through Versions, then select Nightly.
 
-Wodex downloads a newer version's `wodex.nro` to a sibling temporary file and verifies the feed's advertised size, SHA-256, executable headers and embedded assets. Installing saves conversations, closes the interface and embedded resources, preserves a launchable `.previous.nro`, and replaces the actual NRO path supplied by the loader. Reopen Wodex from hbmenu afterward. A normal exit never installs a downloaded update.
+Wodex downloads the selected build's `wodex.nro` to a sibling temporary file and verifies the feed's advertised size, SHA-256, executable headers and embedded assets. Installing saves conversations, closes the interface and embedded resources, preserves a launchable `.previous.nro`, and replaces the actual NRO path supplied by the loader. Reopen Wodex from hbmenu afterward. A normal exit never installs a downloaded update.
 
 The SD-card replacement uses two renames, so power interruption can require restoring the `.previous.nro` backup manually. [Update and recovery instructions](docs/updates.md) explain that boundary, both build channels, and publication recovery.
 
@@ -137,4 +137,4 @@ The integration tests start isolated loopback mock servers. They drive the Rust 
 - `tests/`: integration suites, local mock APIs, and test-only C++ facades that call the production Rust backends.
 - `romfs/`: bundled CJK font, license/attribution, and public CA certificates.
 
-Wodex code is MIT licensed. Third-party notices are in [THIRD_PARTY.md](THIRD_PARTY.md).
+Wodex code is licensed under [WTFPL version 2](LICENSE). Dependencies retain their own licenses, listed in [THIRD_PARTY.md](THIRD_PARTY.md). Previously published downloads retain their accompanying license files.

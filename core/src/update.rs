@@ -224,21 +224,19 @@ fn inspect_feed(
   if build.sha256.len() != 64 || !build.sha256.bytes().all(|byte| byte.is_ascii_hexdigit()) {
     return Err("The published update is missing a valid SHA-256 digest.");
   }
-  // A channel change may finish a nightly's version, but must not downgrade it.
-  // Timestamp comparisons also prevent an installed version from offering an
-  // older nightly of that same version. Development builds have no such clock.
-  let available = version >= current
-    && match &nightly {
-      Some((id, timestamp)) => {
-        version > current
-          || installed.timestamp.is_empty()
-          || timestamp.as_str() > installed.timestamp
-          || (installed.channel == Some(UpdateChannel::Nightly)
-            && timestamp.as_str() == installed.timestamp
-            && *id > build_identity::nightly_id(installed.timestamp, installed.commit))
-      }
-      None => version > current || installed.channel == Some(UpdateChannel::Nightly),
-    };
+  // Nightlies follow the publisher's chronological order independently of their
+  // base version. Returning from Nightly to Versions selects the published
+  // version even when its number is lower than the installed nightly's.
+  let available = match &nightly {
+    Some((id, timestamp)) => {
+      installed.timestamp.is_empty()
+        || timestamp.as_str() > installed.timestamp
+        || (installed.channel == Some(UpdateChannel::Nightly)
+          && timestamp.as_str() == installed.timestamp
+          && *id > build_identity::nightly_id(installed.timestamp, installed.commit))
+    }
+    None => installed.channel == Some(UpdateChannel::Nightly) || version > current,
+  };
   if !available {
     return Ok(json!({"ok":true,"available":false}));
   }
@@ -573,17 +571,26 @@ mod tests {
   }
 
   #[test]
-  fn nightly_updates_compare_build_times_even_with_the_same_version() {
+  fn nightly_updates_follow_build_times_independently_of_semantic_versions() {
     let installed = BuildIdentity {
       channel: Some(UpdateChannel::Nightly),
       timestamp: "2026-10-20T01:02:03Z",
       commit: "abcdef0123456789abcdef0123456789abcdef01",
     };
-    for timestamp in ["2026-10-20T01:02:02Z", "2026-10-20T01:02:03Z", "2026-10-19T23:59:59Z"] {
-      assert_eq!(
-        inspect_nightly(&nightly_feed("0.3.0", timestamp), "0.3.0", installed),
-        json!({"ok":true,"available":false})
-      );
+    for channel in [UpdateChannel::Nightly, UpdateChannel::Version] {
+      let identity = BuildIdentity { channel: Some(channel), ..installed };
+      for version in ["0.2.1", "0.3.0", "0.4.0"] {
+        for (timestamp, available) in [
+          ("2026-10-19T23:59:59Z", false),
+          ("2026-10-20T01:02:02Z", false),
+          ("2026-10-20T01:02:03Z", false),
+          ("2026-10-20T01:02:04Z", true),
+        ] {
+          let response = inspect_nightly(&nightly_feed(version, timestamp), "0.3.0", identity);
+          assert_eq!(response["ok"], true);
+          assert_eq!(response["available"], available, "{channel:?}: {version} at {timestamp}");
+        }
+      }
     }
     let next = nightly_feed("0.3.0", "2026-10-20T01:02:04Z");
     let response = inspect_nightly(&next, "0.3.0", installed);
@@ -592,8 +599,10 @@ mod tests {
     assert_eq!(response["build"]["version"], "0.3.0");
     let updated = BuildIdentity { timestamp: "2026-10-20T01:02:04Z", ..installed };
     assert_eq!(inspect_nightly(&next, "0.3.0", updated)["available"], false);
-    assert_eq!(inspect_nightly(&next, "0.4.0", installed)["available"], false);
-    assert_eq!(inspect_nightly(&next, "0.3.0", BuildIdentity::development())["available"], true);
+    assert_eq!(inspect_nightly(&next, "0.4.0", installed)["available"], true);
+    for version in ["0.2.1", "0.3.0", "0.4.0"] {
+      assert_eq!(inspect_nightly(&next, version, BuildIdentity::development())["available"], true);
+    }
     let stable = BuildIdentity { channel: Some(UpdateChannel::Version), ..updated };
     assert_eq!(inspect_nightly(&next, "0.3.0", stable)["available"], false);
   }
@@ -616,18 +625,21 @@ mod tests {
       candidate["build"]["commit"] = json!(commit);
       candidate["build"]["url"] =
         json!(format!("https://example.github.io/wodex/builds/nightly/{id}/wodex.nro"));
-      assert_eq!(inspect_nightly(&candidate, "0.3.0", installed)["available"], available);
-      let stable = BuildIdentity { channel: Some(UpdateChannel::Version), ..installed };
-      assert_eq!(inspect_nightly(&candidate, "0.3.0", stable)["available"], false);
+      for version in ["0.2.1", "0.3.0", "0.4.0"] {
+        candidate["build"]["version"] = json!(version);
+        assert_eq!(inspect_nightly(&candidate, "0.3.0", installed)["available"], available);
+        let stable = BuildIdentity { channel: Some(UpdateChannel::Version), ..installed };
+        assert_eq!(inspect_nightly(&candidate, "0.3.0", stable)["available"], false);
+      }
     }
     let older_time = nightly_feed("0.4.0", "2026-10-19T01:02:03Z");
-    assert_eq!(inspect_nightly(&older_time, "0.3.0", installed)["available"], true);
+    assert_eq!(inspect_nightly(&older_time, "0.3.0", installed)["available"], false);
   }
 
   #[test]
   fn embedded_identity_prevents_reoffering_the_installed_build() {
-    // Also run with published-build environment variables in a separate Cargo
-    // target directory to exercise the actual build script and binary identity.
+    // CI also rebuilds this test with both published channels to exercise the
+    // actual build script and immutable identity embedded in the executable.
     let installed = BuildIdentity::embedded();
     let Some(channel) = installed.channel else { return };
     let version = env!("CARGO_PKG_VERSION");
@@ -650,37 +662,53 @@ mod tests {
     );
     assert_eq!(stable["ok"], true);
     assert_eq!(stable["available"], channel == UpdateChannel::Nightly);
+    // A published Nightly can return to a lower Versions build. The same
+    // transition on a published Version must remain unavailable.
+    let lower_version = inspect_channel(
+      &feed("0.2.1").to_string(),
+      "0.3.0",
+      "example/wodex",
+      UpdateChannel::Version,
+      installed,
+    );
+    assert_eq!(lower_version["ok"], true);
+    assert_eq!(lower_version["available"], channel == UpdateChannel::Nightly);
+    // A higher base version must not make the installed nightly available again.
+    candidate["build"]["version"] = json!("9.0.0");
+    assert_eq!(
+      inspect_nightly(&candidate, "0.3.0", installed),
+      json!({"ok":true,"available":false})
+    );
   }
 
   #[test]
-  fn switching_from_nightly_can_finish_the_same_version_without_downgrading() {
+  fn switching_from_nightly_can_install_any_latest_version() {
     let installed = BuildIdentity {
       channel: Some(UpdateChannel::Nightly),
       timestamp: "2026-10-20T01:02:03Z",
       commit: "abcdef0123456789abcdef0123456789abcdef01",
     };
-    for (version, available) in [("0.2.9", false), ("0.3.0", true), ("0.3.1", true)] {
-      let response = inspect_channel(
-        &feed(version).to_string(),
-        "0.3.0",
-        "example/wodex",
-        UpdateChannel::Version,
-        installed,
-      );
-      assert_eq!(response["ok"], true);
-      assert_eq!(response["available"], available);
+    for channel in [Some(UpdateChannel::Nightly), Some(UpdateChannel::Version), None] {
+      let identity = match channel {
+        None => BuildIdentity::development(),
+        _ => BuildIdentity { channel, ..installed },
+      };
+      for version in ["0.2.1", "0.3.0", "0.3.1"] {
+        let response = inspect_channel(
+          &feed(version).to_string(),
+          "0.3.0",
+          "example/wodex",
+          UpdateChannel::Version,
+          identity,
+        );
+        assert_eq!(response["ok"], true);
+        assert_eq!(
+          response["available"],
+          channel == Some(UpdateChannel::Nightly) || version == "0.3.1",
+          "{channel:?}: {version}"
+        );
+      }
     }
-    let stable = BuildIdentity { channel: Some(UpdateChannel::Version), ..installed };
-    assert_eq!(
-      inspect_channel(
-        &feed("0.3.0").to_string(),
-        "0.3.0",
-        "example/wodex",
-        UpdateChannel::Version,
-        stable
-      )["available"],
-      false
-    );
   }
 
   #[test]

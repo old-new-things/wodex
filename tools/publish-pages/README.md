@@ -33,6 +33,11 @@ finished snapshot. The executable must contain a bounded NRO header; the license
 archive must have a gzip signature. The workflow is responsible for validating
 the full NRO and license contents before handing artifacts to this tool.
 
+Incoming artifacts also require `build-info.json`, containing `schema_version: 1`,
+`version`, `channel`, `timestamp`, and `commit`. Its values must match the source
+build and publication arguments. This CI identity record is checked but is not
+copied to public downloads.
+
 `catalog.json` uses `schema_version: 1` with a `builds` array. Each build contains
 `channel`, `id`, `version`, `timestamp`, `commit`, `size`, `sha256`,
 `licenses_sha256`, and an `assets` map containing each file's `size` and `sha256`.
@@ -42,15 +47,22 @@ versions whose downloadable files have expired, to prevent later replacement.
 
 Nightly IDs are `YYYYMMDDTHHMMSSZ-<first-seven-commit-characters>`. Downloads live
 under `builds/nightly/<id>/` and `builds/version/<X.Y.Z>/`. The publisher retains
-the seven newest nightlies and ten highest explicit versions. If necessary, it
-prunes additional older entries to keep total download payloads within 450 MiB,
-preserving the newest build in each channel. Integrity failure in a restored
-snapshot aborts publication without modifying that snapshot.
+at most seven nightlies, ordered by their UTC build timestamps regardless of base
+version, and ten highest explicit versions. Older nightly entries and their
+download files are removed from each new snapshot; a delayed older build cannot
+displace a newer nightly. If necessary, it prunes additional older entries to keep
+total download payloads within 450 MiB, preserving the newest build in each
+channel. Integrity failure in a restored snapshot aborts publication without
+modifying that snapshot.
 
 `updates/stable.json` contains `schema_version: 1`, `channel: "version"`, and
 `build: null` until a version is published. Otherwise `build` contains `version`,
 absolute HTTPS `url`, `size`, `sha256`, and plain-text `notes` for the highest
 semantic version. Nightlies never enter the stable update feed.
+
+`updates/nightly.json` uses the same envelope with `channel: "nightly"`. Its build
+adds `id`, `timestamp`, and `commit` and points to the newest retained nightly by
+UTC timestamp, even when its base version number is lower.
 
 The static HTML and CSS contain no scripts, external requests, analytics,
 publishing actor, environment details, or local filesystem paths.
