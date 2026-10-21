@@ -114,9 +114,9 @@ In current nightlies, open **Settings → HOME Menu** to install a Wodex tile. I
 
 ## PC import and export
 
-In current nightlies, open **Settings → PC transfer → Start PC transfer**, then open the displayed address in a browser on a PC connected to the same local network. Enter the pairing code to download or upload **Configuration** and **Sessions** as separate JSON files. You can edit exported JSON on your PC before importing it.
+In current nightlies, open **Settings → PC transfer → Start PC transfer**, then open the displayed address in a browser on a PC connected to the same local network. Enter the pairing code to edit your saved API key, model and assistant instructions directly in the browser. **Advanced settings** contains the endpoint, thinking mode, response limit and update settings. Choose **Send changes to Switch**, then confirm the replacement on the Switch. You can also download or upload **Configuration** and **Sessions** as separate JSON backups.
 
-Configuration exports include the **saved API key**; the desktop environment override stays private. Sessions contain conversations and reasoning without configuration. Every import waits for confirmation on the Switch, replaces only its selected channel, and keeps a recovery copy of the previous save. Transfers use local HTTP without encryption, so use a trusted network. Stop transfer, go back, or exit Wodex when finished; it also expires after 15 minutes. [PC transfer instructions and file formats](docs/transfer.md) cover editing, limits and recovery. Physical Switch LAN transfer still needs hardware verification.
+The browser masks the **saved API key** until you choose to show it; configuration downloads include the key. The desktop environment override stays private. Sessions contain conversations and reasoning without configuration. Browser edits and file imports wait for confirmation on the Switch, replace only their selected channel, and keep a recovery copy of the previous save. Transfers use local HTTP without encryption, so use a trusted network. Stop transfer, go back, or exit Wodex when finished; it also expires after 15 minutes. [PC transfer instructions and file formats](docs/transfer.md) cover editing, limits and recovery. Physical Switch LAN transfer still needs hardware verification.
 
 ## Self-updates
 
@@ -141,11 +141,11 @@ cmake --build build/desktop --parallel
 ctest --test-dir build/desktop --output-on-failure
 ```
 
-The browser client is authored in TypeScript. When editing `tools/transfer-web/transfer.ts`, regenerate the committed JavaScript before building the app:
+The browser client is authored in TypeScript under `tools/transfer-web/`. After editing it, use Node.js 20 or newer to regenerate the committed JavaScript and run its behavior tests before building the app:
 
 ```sh
 npm ci --prefix tools/transfer-web --ignore-scripts --no-audit --no-fund
-npm run --prefix tools/transfer-web build
+npm test --prefix tools/transfer-web
 ```
 
 CI checks that the generated file matches its source. Normal app builds use the committed assets and do not require Node.js.

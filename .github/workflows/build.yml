@@ -69,6 +69,8 @@ jobs:
           npm ci --prefix tools/transfer-web --ignore-scripts --no-audit --no-fund
           npm run --prefix tools/transfer-web build
           git diff --exit-code -- romfs/transfer/transfer.js
+      - name: Test browser configuration editor
+        run: npm test --prefix tools/transfer-web
       - name: Check Rust
         run: |
           cargo fmt --all -- --check

@@ -71,7 +71,11 @@ def main():
         return data
 
       page = request("/", authenticated=False)
-      check(b"Move what matters." in page, "Missing local browser page.")
+      check(b"Edit on your PC" in page, "Missing local browser configuration editor.")
+      check(b'id="config-api-key" name="api_key" type="password"' in page,
+        "Saved-key editor is not masked by default.")
+      check(b'id="config-model"' in page and b'id="config-system-prompt"' in page,
+        "Missing model or assistant-instructions input.")
       check(code.encode() not in page and b"saved-transfer-test-key" not in page, "Public page leaks credentials.")
       request("/transfer.js", authenticated=False)
       request("/transfer.css", authenticated=False)

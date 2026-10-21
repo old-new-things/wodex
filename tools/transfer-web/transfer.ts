@@ -22,6 +22,8 @@ let pending = false;
 let generation = 0;
 let statusRevision = 0;
 const requests = new Set<AbortController>();
+const configEditor = new ConfigurationEditor(controls);
+let awaitingEditor = false;
 
 function notice(message: string, error = false): void {
   statusText.textContent = message;
@@ -36,6 +38,7 @@ function controls(): void {
     input.disabled = busy || pending || !pairingCode;
   });
   connectButton.disabled = busy;
+  configEditor.controls(Boolean(pairingCode), busy || pending);
 }
 
 function disconnect(message: string, error = false): void {
@@ -47,6 +50,8 @@ function disconnect(message: string, error = false): void {
   showCode.checked = false;
   pending = false;
   busy = false;
+  awaitingEditor = false;
+  configEditor.clear();
   window.clearTimeout(pollTimer);
   for (const request of requests) request.abort();
   requests.clear();
@@ -97,8 +102,30 @@ function readStatus(value: unknown): TransferStatus {
 }
 
 function errorMessage(error: unknown): string {
+  // JSON parser errors can quote response contents, including an API key.
+  if (error instanceof SyntaxError) return "Wodex returned an invalid response. Reload and try again.";
   return error instanceof Error && error.name !== "AbortError"
     ? error.message : "Connection interrupted. Keep Wodex open and check your local network.";
+}
+
+// Callers hold the busy flag so a load cannot overwrite edits made in flight.
+async function loadConfiguration(message = "Showing saved configuration. Edit it below.", preserveDraft = false): Promise<void> {
+  const current = generation;
+  configEditor.notice("Loading saved configuration…");
+  try {
+    const value: unknown = await (await request("/api/config")).json();
+    if (current !== generation) return;
+    const document = readConfiguration(value);
+    if (preserveDraft) configEditor.reconcile(document, message);
+    else {
+      configEditor.load(document);
+      configEditor.notice(message);
+    }
+  } catch (error) {
+    if (current === generation) {
+      configEditor.requireReload(`${errorMessage(error)} Use Reload saved configuration to retry.`);
+    }
+  }
 }
 
 async function poll(): Promise<void> {
@@ -115,6 +142,18 @@ async function poll(): Promise<void> {
     const changed = pending !== status.pending;
     pending = status.pending;
     if (pending || changed) notice(status.message || "Confirm or reject the import on your Switch.");
+    if (pending) {
+      configEditor.notice("An import is waiting. Confirm or reject it on your Switch before editing.");
+    } else if (changed) {
+      const preserveDraft = !awaitingEditor;
+      awaitingEditor = false;
+      busy = true;
+      statusRevision += 1;
+      controls();
+      await loadConfiguration(`${status.message || "Import finished."} Showing saved configuration.`, preserveDraft);
+      if (current !== generation) return;
+      busy = false;
+    }
     controls();
   } catch (error) {
     if (current === generation && revision === statusRevision) disconnect(errorMessage(error), true);
@@ -143,7 +182,9 @@ pairForm.addEventListener("submit", async event => {
     pairForm.hidden = true;
     channels.hidden = false;
     connection.hidden = false;
-    notice(pending ? status.message : "Connected. Choose configuration or sessions below.");
+    notice(pending ? status.message : "Connected. Edit configuration or transfer a backup below.");
+    await loadConfiguration(pending ? "An import is waiting for confirmation on your Switch." : undefined);
+    if (current !== generation) return;
     pollTimer = window.setTimeout(poll, 1500);
   } catch (error) {
     if (current === generation) disconnect(errorMessage(error), true);
@@ -154,6 +195,56 @@ pairForm.addEventListener("submit", async event => {
 
 element("disconnect").addEventListener("click", () => disconnect("Disconnected from this browser. Stop transfer in Wodex when finished."));
 showCode.addEventListener("change", () => { pairCode.type = showCode.checked ? "text" : "password"; });
+
+configEditor.reload.addEventListener("click", async () => {
+  if (busy || pending || !pairingCode) return;
+  if (configEditor.dirty() && !window.confirm("Discard your unsent changes and reload the saved configuration from Wodex?")) return;
+  const current = generation;
+  statusRevision += 1;
+  busy = true;
+  controls();
+  await loadConfiguration();
+  if (current === generation) {
+    awaitingEditor = false;
+    busy = false;
+    controls();
+  }
+});
+
+configEditor.form.addEventListener("submit", async event => {
+  event.preventDefault();
+  if (busy || pending || !pairingCode || !configEditor.dirty()) return;
+  let body: string;
+  try {
+    body = JSON.stringify(configEditor.document());
+  } catch (error) {
+    configEditor.notice(errorMessage(error), true);
+    return;
+  }
+  const current = generation;
+  statusRevision += 1;
+  busy = true;
+  awaitingEditor = false;
+  controls();
+  configEditor.notice("Sending configuration to your Switch…");
+  try {
+    const response = await request("/api/config", "POST", body);
+    if (current !== generation) return;
+    if (response.status !== 202) throw new Error("Wodex did not acknowledge the configuration change.");
+    awaitingEditor = true;
+    pending = true;
+    statusRevision += 1;
+    const message = "Changes sent. Confirm replacement on your Switch to save them, or reject to keep the previous settings.";
+    configEditor.notice(message);
+    notice(message);
+  } catch (error) {
+    if (current === generation) {
+      configEditor.requireReload(`${errorMessage(error)} Check your Switch, then reload saved configuration before trying again.`);
+    }
+  } finally {
+    if (current === generation) { busy = false; controls(); }
+  }
+});
 
 async function download(channel: Channel): Promise<void> {
   const current = generation;
@@ -226,4 +317,5 @@ document.querySelectorAll<HTMLButtonElement>(".download, .upload").forEach(butto
   });
 });
 window.addEventListener("pagehide", () => disconnect("Disconnected."));
+configEditor.clear();
 controls();

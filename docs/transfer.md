@@ -7,15 +7,25 @@ Current nightlies support two independent JSON transfer channels: **Configuratio
 1. Connect the Switch and PC to the same local network. Finish any response, app update or HOME Menu installation.
 2. Open **Settings → PC transfer → Start PC transfer** in Wodex.
 3. Open the displayed `http://` address, including its port, in your PC browser. Enter the complete 32-character pairing code shown on the Switch. Spaces and hyphens are ignored.
-4. Choose **Download configuration** or **Download sessions** to save `wodex-config.json` or `wodex-sessions.json` on your PC.
-5. To import, choose the matching JSON file and select **Send to Switch**. Review the replacement on the Switch, then choose **Confirm replacement** or **Reject import**.
+4. Your saved configuration loads into **Edit on your PC**. Change the fields and choose **Send changes to Switch**. Review the replacement on the Switch, then choose **Confirm replacement** or **Reject import**.
+5. For file backups, choose **Download configuration** or **Download sessions** to save `wodex-config.json` or `wodex-sessions.json`. To import a backup, choose the matching JSON file and select **Send to Switch**; the Switch asks for the same confirmation.
 6. Select **Stop transfer**, go back from the transfer page, or exit Wodex when finished. Each start shows the current address and a fresh pairing code; the listener also stops after 15 minutes.
 
-Keep Wodex on the transfer page while connected. Chatting, editing, image downloads and update operations stay paused during transfer. Closing or disconnecting the browser clears its pairing state but does not stop the Switch listener; stop it in Wodex as well. Desktop development builds support the same flow; offline demo mode does not start a server.
+Keep Wodex on the transfer page while connected. On-device chatting and editing, image downloads and update operations stay paused during transfer. Closing or disconnecting the browser clears its pairing state but does not stop the Switch listener; stop it in Wodex as well. Desktop development builds support the same flow; offline demo mode does not start a server.
 
-Transfers use **HTTP without TLS**. Use a trusted local network: the pairing code controls access but does not encrypt traffic. Configuration exports **include the saved DeepSeek API key**. A desktop `DEEPSEEK_API_KEY` environment override is never exported or written into the file; it continues overriding the runtime key after import. Keep downloaded configuration and session files private.
+Transfers use **HTTP without TLS**. Use a trusted local network: the pairing code controls access but does not encrypt traffic. The configuration form loads the **saved DeepSeek API key**, and configuration downloads include it. A desktop `DEEPSEEK_API_KEY` environment override is never shown in the form, exported or written into the file; it continues overriding the runtime key after import. Keep downloaded configuration and session files private.
 
 If the page cannot connect, check that the full address is current, both devices can reach one another, and the network does not isolate Wi-Fi clients. Restart transfer after changing networks. Wodex does not configure router port forwarding.
+
+## Edit configuration in the browser
+
+The form provides **Saved API key**, **Model** and multiline **Assistant instructions**. The key is masked by default; **Show API key** reveals it. Leaving the key field empty clears the saved key when you send and confirm the change.
+
+Expand **Advanced settings** to edit the API endpoint, thinking mode, response token limit, update repository and update channel. The browser checks field limits before sending; Wodex performs the authoritative validation before offering confirmation. An empty update repository disables the update source.
+
+Edits stay in the current page until you choose **Send changes to Switch**, and saved configuration changes only after device confirmation. Sessions remain unchanged. **Reload saved configuration** replaces the form with the device's saved values and asks before discarding unsent edits. JSON download and upload remain available alongside the form.
+
+After you confirm or reject a submitted form on the Switch, the editor reloads the settings that are actually saved. If a different import changes configuration while you have an unsent draft, Wodex keeps the draft visible and asks you to reload before sending it. Session imports leave that draft editable. Disconnecting clears the form and its API key; drafts are not stored in browser storage.
 
 ## Files and replacement behavior
 

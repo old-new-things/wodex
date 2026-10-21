@@ -3,11 +3,12 @@
     "target": "ES2020",
     "module": "none",
     "lib": ["ES2020", "DOM"],
+    "types": [],
     "strict": true,
     "noEmitOnError": true,
     "outFile": "../../romfs/transfer/transfer.js",
     "newLine": "lf",
     "removeComments": false
   },
-  "files": ["transfer.ts"]
+  "files": ["config.ts", "transfer.ts"]
 }
