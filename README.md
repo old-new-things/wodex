@@ -2,9 +2,9 @@
 
 [![Build and test](https://github.com/old-new-things/wodex/actions/workflows/build.yml/badge.svg)](https://github.com/old-new-things/wodex/actions/workflows/build.yml)
 
-A native DeepSeek chat client for Nintendo Switch homebrew, with a desktop build for development. Inspired by wiliwili's controller navigation and readable handheld interface.
+A native chat client for DeepSeek and OpenAI-compatible providers on Nintendo Switch homebrew, with a desktop build for development. Inspired by wiliwili's controller navigation and readable handheld interface.
 
-The app streams Markdown replies with PNG/JPEG images, saves conversations, supports thinking mode, includes a Chinese-capable font, and uses the Switch system keyboard. It can import and export configuration and sessions through a local PC browser. It also checks the Versions and Nightly channels for updates and can replace its verified Switch NRO on exit. A real ARM64 `.nro` has been cross-compiled and linked. Physical Switch testing and a live request with your own DeepSeek key are still required.
+The app streams Markdown replies with PNG/JPEG images, saves conversations, supports thinking mode, includes a Chinese-capable font, and uses the Switch system keyboard. It can import and export configuration and sessions through a local PC browser. It also checks the Versions and Nightly channels for updates and can replace its verified Switch NRO on exit. A real ARM64 `.nro` has been cross-compiled and linked. Physical Switch testing and a live request with your own provider key are still required.
 
 ![Desktop preview](docs/preview.png)
 
@@ -12,10 +12,10 @@ The app streams Markdown replies with PNG/JPEG images, saves conversations, supp
 
 1. Download `wodex.nro` from the [Nightly or Versions channel](https://old-new-things.github.io/wodex/). Copy it to `sdmc:/switch/wodex/wodex.nro`. Local builds produce `build/switch/wodex.nro`.
 2. Launch hbmenu with full application memory through your homebrew environment. For a typical title-override setup, hold **R** while launching a game, then select Wodex.
-3. Open **Settings**, enter your [DeepSeek API key](https://platform.deepseek.com/), and return to chat.
+3. Open **Settings**, choose **DeepSeek** or **OpenAI-compatible**, and enter your API key. For OpenAI-compatible services, set the provider's API base URL and exact model name, then return to chat.
 4. Press **X** to write, confirm the keyboard, then select **Send**.
 
-DeepSeek runs remotely; the Switch is the chat client. Wodex connects directly to your configured provider. There is no application server to deploy.
+Models run remotely; the Switch is the chat client. Wodex connects directly to your configured provider. There is no application server to deploy.
 
 | Control | Action |
 | --- | --- |
@@ -30,6 +30,10 @@ DeepSeek runs remotely; the Switch is the chat client. Wodex connects directly t
 | + | Save and exit |
 
 Touch is supported. Settings provide a configurable model name, endpoint, thinking mode, response token limit, and assistant instructions. The default model is `deepseek-flash`, matching the [current DeepSeek API](https://api-docs.deepseek.com/). Change the model name in Settings when your provider changes its available models.
+
+**OpenAI-compatible** uses the Chat Completions API. Set the base URL including its API path, such as `https://api.openai.com/v1`; Wodex appends `/chat/completions`. Choose the model yourself. The response limit can use `max_tokens` or `max_completion_tokens`, depending on the service/model. DeepSeek-only thinking controls are omitted in this mode. Both modes require an API key and stream text replies; native Responses, Anthropic Messages and OAuth login are not included.
+
+Changing providers clears the current key and resets the endpoint, model and provider options. Wodex stores one active provider configuration; export it before switching if you want to keep it. Existing saves and configuration backups without a provider field continue to use DeepSeek. The protocol types come from pinned [Tokn](https://github.com/tokn-ai/tokn) crates with default features disabled; the Switch build remains `no_std + alloc`.
 
 ## Build and run on desktop
 
@@ -60,7 +64,8 @@ Desktop controls: arrows and Enter select; **X** opens the composer; **Ctrl/Cmd 
 
 | Environment variable | Purpose |
 | --- | --- |
-| `DEEPSEEK_API_KEY` | Desktop session key override; never writes that override to disk |
+| `DEEPSEEK_API_KEY` | Desktop session key override for DeepSeek only; never writes that override to disk |
+| `OPENAI_API_KEY` | Desktop session key override for the selected OpenAI-compatible endpoint only; never writes that override to disk |
 | `WODEX_DATA_DIR` | Desktop data directory override |
 | `WODEX_FONT` | Desktop TrueType/OpenType font override; otherwise uses the bundled CJK font |
 | `WODEX_CA_BUNDLE` | Desktop custom CA bundle for HTTPS verification |
@@ -114,7 +119,7 @@ In current nightlies, open **Settings → HOME Menu** to install a Wodex tile. I
 
 ## PC import and export
 
-In current nightlies, open **Settings → PC transfer → Start PC transfer**, then open the displayed address in a browser on a PC connected to the same local network. Enter the pairing code to edit your saved API key, model and assistant instructions directly in the browser. **Advanced settings** contains the endpoint, thinking mode, response limit and update settings. Choose **Send changes to Switch**, then confirm the replacement on the Switch. You can also download or upload **Configuration** and **Sessions** as separate JSON backups.
+In current nightlies, open **Settings → PC transfer → Start PC transfer**, then open the displayed address in a browser on a PC connected to the same local network. Enter the pairing code to edit the provider, saved API key, endpoint, model and assistant instructions directly in the browser. **Advanced settings** contains provider options, response limit and update settings. Choose **Send changes to Switch**, then confirm the replacement on the Switch. You can also download or upload **Configuration** and **Sessions** as separate JSON backups.
 
 The browser masks the **saved API key** until you choose to show it; configuration downloads include the key. The desktop environment override stays private. Sessions contain conversations and reasoning without configuration. Browser edits and file imports wait for confirmation on the Switch, replace only their selected channel, and keep a recovery copy of the previous save. Transfers use local HTTP without encryption, so use a trusted network. Stop transfer, go back, or exit Wodex when finished; it also expires after 15 minutes. [PC transfer instructions and file formats](docs/transfer.md) cover editing, limits and recovery. Physical Switch LAN transfer still needs hardware verification.
 

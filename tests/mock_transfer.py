@@ -26,7 +26,8 @@ def main():
   with tempfile.TemporaryDirectory(prefix="wodex-transfer-") as temporary:
     directory = Path(temporary)
     environment = dict(os.environ, SDL_VIDEODRIVER="dummy", WODEX_DATA_DIR=temporary,
-      WODEX_FONT="", DEEPSEEK_API_KEY="environment-only-test-key")
+      WODEX_FONT="", DEEPSEEK_API_KEY="environment-only-test-key",
+      OPENAI_API_KEY="openai-environment-only-test-key")
     process = subprocess.Popen([sys.argv[1], sys.argv[2]], stdin=subprocess.PIPE,
       stdout=subprocess.PIPE, text=True, env=environment)
 
@@ -76,6 +77,14 @@ def main():
         "Saved-key editor is not masked by default.")
       check(b'id="config-model"' in page and b'id="config-system-prompt"' in page,
         "Missing model or assistant-instructions input.")
+      check(b'id="config-provider" name="provider"' in page
+        and b'<option value="deepseek">' in page and b'<option value="openai_compatible">' in page,
+        "Missing DeepSeek/OpenAI-compatible provider selector.")
+      check(b'id="config-base-url" name="base_url"' in page,
+        "Missing provider endpoint input.")
+      check(b'id="config-token-limit-field" name="token_limit_field"' in page
+        and b'<option value="max_tokens">' in page and b'<option value="max_completion_tokens">' in page,
+        "Missing compatible-provider token limit selector.")
       check(code.encode() not in page and b"saved-transfer-test-key" not in page, "Public page leaks credentials.")
       request("/transfer.js", authenticated=False)
       request("/transfer.css", authenticated=False)
@@ -96,6 +105,8 @@ def main():
       check(config["channel"] == "config" and config["schema_version"] == 1, "Wrong config schema.")
       check(config["settings"]["api_key"] == "saved-transfer-test-key", "Config does not include the saved key.")
       check("environment-only-test-key" not in json.dumps(config), "Export leaked the environment override.")
+      check("openai-environment-only-test-key" not in json.dumps(config),
+        "DeepSeek export leaked the OpenAI environment override.")
       check("settings" not in sessions and "conversations" not in config, "Channels were mixed.")
       check(sessions["conversations"] == original["conversations"], "Sessions differ on export.")
 
@@ -120,6 +131,31 @@ def main():
       check(json.loads(request("/api/config")) == changed, "Exports did not refresh after config import.")
       check(any(p.name.startswith("state.json") and p.name != "state.json" for p in directory.iterdir()),
         "Import did not preserve a recovery copy.")
+
+      compatible = copy.deepcopy(changed)
+      compatible["settings"].update(provider="openai_compatible", token_limit_field="max_completion_tokens",
+        api_key="saved-compatible-test-key", base_url="https://compatible.invalid/v1",
+        model="compatible-test-model", thinking=False)
+      request("/api/config", "POST", json.dumps(compatible, ensure_ascii=False).encode(), expected=202)
+      check(json.loads(request("/api/status"))["pending"], "Compatible-provider import did not become pending.")
+      check(saved() == after_config, "Compatible-provider upload changed data before confirmation.")
+      command("frame")
+      command("confirm")
+      after_config = saved()
+      check(after_config["settings"] == compatible["settings"],
+        "Confirmed compatible-provider settings were not saved.")
+      check(after_config["conversations"] == original["conversations"],
+        "Compatible-provider import changed conversations.")
+      check(json.loads(request("/api/sessions")) == sessions,
+        "Compatible-provider import changed exported sessions or their selection.")
+      compatible_export = json.loads(request("/api/config"))
+      check(compatible_export == compatible, "Compatible provider and token field did not round-trip through HTTP.")
+      check(compatible_export["settings"]["api_key"] == "saved-compatible-test-key",
+        "Compatible-provider export does not include its saved key.")
+      check("environment-only-test-key" not in json.dumps(compatible_export),
+        "Compatible-provider export leaked a provider environment override.")
+      check("openai-environment-only-test-key" not in json.dumps(after_config),
+        "Confirming compatible-provider settings persisted the environment override.")
 
       updated_sessions = copy.deepcopy(sessions)
       updated_sessions["active_id"] = "chat-7"

@@ -1,9 +1,12 @@
+use crate::provider::{self, Provider, TokenLimitField};
 use crate::stream::{Event, Stream};
 use crate::update::UpdateChannel;
 use alloc::{format, string::String, vec, vec::Vec};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+#[cfg(test)]
+mod provider_tests;
 pub(crate) mod transfer;
 
 pub(crate) const MAX_SAVED_BYTES: usize = 4 * 1024 * 1024;
@@ -21,6 +24,10 @@ pub(crate) const OFFICIAL_UPDATE_REPOSITORY: &str = "old-new-things/wodex";
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Settings {
+  #[serde(default, skip_serializing_if = "Provider::is_deepseek")]
+  pub provider: Provider,
+  #[serde(default, skip_serializing_if = "TokenLimitField::is_max_tokens")]
+  pub token_limit_field: TokenLimitField,
   pub api_key: String,
   pub base_url: String,
   pub model: String,
@@ -36,6 +43,8 @@ pub struct Settings {
 impl Default for Settings {
   fn default() -> Self {
     Self {
+      provider: Provider::DeepSeek,
+      token_limit_field: TokenLimitField::MaxTokens,
       api_key: String::new(),
       base_url: "https://api.deepseek.com".into(),
       model: "deepseek-flash".into(),
@@ -51,6 +60,8 @@ impl Default for Settings {
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SettingsPatch {
+  pub provider: Option<Provider>,
+  pub token_limit_field: Option<TokenLimitField>,
   pub api_key: Option<String>,
   pub base_url: Option<String>,
   pub model: Option<String>,
@@ -133,7 +144,7 @@ pub(crate) enum Command {
   ResetStorage {},
 }
 
-/// Chat state and DeepSeek protocol, with no filesystem or network effects.
+/// Chat state and provider requests, with no filesystem or network effects.
 pub struct WodexCore {
   state: State,
   next_id: u64,
@@ -246,6 +257,17 @@ impl WodexCore {
     match command {
       Command::Settings { settings: patch } => {
         let mut settings = self.state.settings.clone();
+        if let Some(provider) = patch.provider.filter(|provider| *provider != settings.provider) {
+          // Switching protocols must not silently send the previous provider's
+          // credential to a new service. A complete imported/edited document
+          // may explicitly supply its own credential and endpoint afterwards.
+          settings.provider = provider;
+          settings.api_key.clear();
+          settings.base_url = provider.default_base_url().into();
+          settings.model = provider.default_model().into();
+          settings.thinking = false;
+          settings.token_limit_field = TokenLimitField::MaxTokens;
+        }
         macro_rules! apply {
           ($($field:ident),+ $(,)?) => {$({
             if let Some(value) = patch.$field {
@@ -254,6 +276,7 @@ impl WodexCore {
           })+};
         }
         apply!(
+          token_limit_field,
           api_key,
           base_url,
           model,
@@ -408,35 +431,21 @@ impl WodexCore {
   fn check_ready(&self) -> Result<(), String> {
     validate_settings(&self.state.settings)?;
     if self.state.settings.api_key.trim().is_empty() {
-      return Err("Add your DeepSeek API key in Settings first.".into());
+      return Err(format!(
+        "Add your {} API key in Settings first.",
+        self.state.settings.provider.label()
+      ));
+    }
+    if self.state.settings.model.is_empty() {
+      return Err("Enter your provider's model name in Settings first.".into());
     }
     Ok(())
   }
 
   fn start_request(&mut self) -> Value {
     let index = self.active_index();
-    let mut messages = Vec::new();
-    if !self.state.settings.system_prompt.is_empty() {
-      messages.push(json!({"role": "system", "content": self.state.settings.system_prompt}));
-    }
-    for message in &self.state.conversations[index].messages {
-      if message.status == MessageStatus::Complete {
-        // Reasoning is display-only for this tool-free chatbot. The API does
-        // not need a previous turn's reasoning_content in its chat history.
-        messages.push(json!({"role": message.role, "content": message.content}));
-      }
-    }
-    let mut body = json!({
-      "model": self.state.settings.model,
-      "messages": messages,
-      "stream": true,
-      "stream_options": {"include_usage": true},
-      "max_tokens": self.state.settings.max_tokens,
-      "thinking": {"type": if self.state.settings.thinking {"enabled"} else {"disabled"}}
-    });
-    if self.state.settings.thinking {
-      body["reasoning_effort"] = json!("high");
-    }
+    let body =
+      provider::chat_request(&self.state.settings, &self.state.conversations[index].messages);
     let request = json!({
       "url": format!("{}/chat/completions", self.state.settings.base_url),
       "api_key": self.state.settings.api_key,
@@ -503,7 +512,8 @@ impl WodexCore {
     }
     if let Some(status) = http_status.filter(|status| !(200..300).contains(status)) {
       return Ok(self.fail_stream(&format!(
-        "DeepSeek returned HTTP {status}. Check your key, balance, and endpoint."
+        "{} returned HTTP {status}. Check your key, balance, and endpoint.",
+        self.state.settings.provider.label()
       )));
     }
     let events = self.stream.as_mut().expect("active stream").finish();
@@ -765,6 +775,14 @@ fn make_title(content: &str) -> String {
 }
 
 fn validate_settings(settings: &Settings) -> Result<(), String> {
+  if settings.provider == Provider::OpenAiCompatible && settings.thinking {
+    return Err("Thinking controls are available only for DeepSeek.".into());
+  }
+  if settings.provider == Provider::DeepSeek
+    && settings.token_limit_field != TokenLimitField::MaxTokens
+  {
+    return Err("DeepSeek uses the max_tokens response limit.".into());
+  }
   if !settings.update_repository.is_empty()
     && !crate::update::valid_repository(&settings.update_repository)
   {
@@ -779,7 +797,7 @@ fn validate_settings(settings: &Settings) -> Result<(), String> {
       "The API key must contain no spaces or control characters and be at most 4096 bytes.".into(),
     );
   }
-  if settings.model.is_empty()
+  if (settings.model.is_empty() && settings.provider == Provider::DeepSeek)
     || settings.model.len() > 128
     || !settings.model.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"-_.:/".contains(&byte))
   {

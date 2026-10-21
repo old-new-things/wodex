@@ -38,13 +38,160 @@ test("pairing loads saved configuration into the actual HTML form without postin
   assert.equal(app.element("config-system-prompt").value, CONFIG.settings.system_prompt);
   assert.equal(app.element("config-base-url").value, CONFIG.settings.base_url);
   assert.equal(app.element("config-thinking").checked, true);
+  assert.equal(app.element("config-provider").value, "deepseek");
+  assert.equal(app.element("config-token-limit-field").value, "max_tokens");
+  assert.equal(app.element("config-thinking-field").hidden, false);
+  assert.equal(app.element("config-token-limit-choice").hidden, true);
   assert.equal(app.element("config-max-tokens").value, String(CONFIG.settings.max_tokens));
   assert.equal(app.element("config-update-repository").value, CONFIG.settings.update_repository);
   assert.equal(app.element("config-update-channel").value, CONFIG.settings.update_channel);
   assert.equal(app.element("config-fields").disabled, false);
   assert.equal(posts(app), 0);
   assert.equal(configReads(app), 1);
+  assert.equal(app.element("config-save").disabled, true);
   assert.ok(!notices(app).includes(CONFIG.settings.api_key));
+});
+
+test("changing provider clears the draft credential and resets only provider-specific settings", async () => {
+  const app = new Harness();
+  await pair(app);
+  await app.edit("show-api-key", true);
+  await app.edit("config-system-prompt", "Keep these instructions.");
+  app.element("config-provider").value = "openai_compatible";
+  await app.element("config-provider").dispatch("input");
+  await app.element("config-provider").dispatch("change");
+  await app.flush();
+  assert.equal(posts(app), 0);
+  assert.equal(app.element("config-api-key").value, "");
+  assert.equal(app.element("config-api-key").type, "password");
+  assert.equal(app.element("show-api-key").checked, false);
+  assert.equal(app.element("config-base-url").value, "https://api.openai.com/v1");
+  assert.equal(app.element("config-model").value, "");
+  assert.equal(app.element("config-thinking").checked, false);
+  assert.equal(app.element("config-thinking").disabled, true);
+  assert.equal(app.element("config-thinking-field").hidden, true);
+  assert.equal(app.element("config-token-limit-choice").hidden, false);
+  assert.equal(app.element("config-token-limit-field").disabled, false);
+  assert.equal(app.element("config-system-prompt").value, "Keep these instructions.");
+  assert.equal(app.element("config-max-tokens").value, String(CONFIG.settings.max_tokens));
+  assert.match(app.element("config-status").textContent, /key was cleared/i);
+  const document = await sendForm(app) as { settings: Record<string, unknown> };
+  assert.equal(document.settings.provider, "openai_compatible");
+  assert.equal(document.settings.api_key, "");
+  assert.equal(document.settings.model, "");
+  assert.equal(document.settings.thinking, false);
+  assert.ok(!("token_limit_field" in document.settings));
+  assert.equal(app.element("config-fields").disabled, true, "Changing a provider still needs Switch confirmation.");
+});
+
+test("a saved compatible provider loads its credential, endpoint and token field without being reset", async () => {
+  const app = new Harness();
+  const saved = {
+    ...CONFIG,
+    settings: {
+      ...CONFIG.settings,
+      provider: "openai_compatible",
+      token_limit_field: "max_completion_tokens",
+      api_key: "compatible-saved-key",
+      base_url: "https://provider.invalid/api/v1",
+      model: "provider-model",
+      thinking: false
+    }
+  };
+  await pair(app, saved);
+  assert.equal(app.element("config-provider").value, "openai_compatible");
+  assert.equal(app.element("config-api-key").value, saved.settings.api_key);
+  assert.equal(app.element("config-api-key").type, "password");
+  assert.equal(app.element("config-base-url").value, saved.settings.base_url);
+  assert.equal(app.element("config-model").value, saved.settings.model);
+  assert.equal(app.element("config-token-limit-field").value, "max_completion_tokens");
+  assert.equal(app.element("config-thinking-field").hidden, true);
+  assert.equal(app.element("config-save").disabled, true);
+  // Duplicate input/change events for one selection must not clear credentials.
+  await app.edit("config-provider", "openai_compatible");
+  assert.equal(app.element("config-api-key").value, saved.settings.api_key);
+  await app.edit("config-max-tokens", "2048");
+  assert.deepEqual(await sendForm(app), {
+    ...saved,
+    settings: { ...saved.settings, max_tokens: 2048 }
+  });
+});
+
+test("switching back to DeepSeek clears the compatible key and emits a legacy-compatible document", async () => {
+  const app = new Harness();
+  await pair(app);
+  await app.edit("config-provider", "openai_compatible");
+  await app.edit("config-api-key", "compatible-draft-key");
+  await app.edit("config-model", "compatible-model");
+  await app.edit("config-token-limit-field", "max_completion_tokens");
+  await app.edit("config-provider", "deepseek");
+  assert.equal(app.element("config-api-key").value, "");
+  assert.equal(app.element("config-base-url").value, "https://api.deepseek.com");
+  assert.equal(app.element("config-model").value, "deepseek-flash");
+  assert.equal(app.element("config-token-limit-field").value, "max_tokens");
+  assert.equal(app.element("config-token-limit-field").disabled, true);
+  assert.equal(app.element("config-thinking").disabled, false);
+  const document = await sendForm(app) as { settings: Record<string, unknown> };
+  assert.ok(!("provider" in document.settings));
+  assert.ok(!("token_limit_field" in document.settings));
+  assert.equal(document.settings.api_key, "");
+  assert.equal(document.settings.thinking, false);
+});
+
+test("compatible provider edits preserve custom endpoint, model and the selected token parameter", async () => {
+  const app = new Harness();
+  await pair(app);
+  await app.edit("config-provider", "openai_compatible");
+  await app.edit("config-api-key", "new-compatible-key");
+  await app.edit("config-base-url", "https://compatible.invalid/custom/v1/");
+  await app.edit("config-model", "provider/model-name");
+  await app.edit("config-token-limit-field", "max_completion_tokens");
+  const document = await sendForm(app) as { settings: Record<string, unknown> };
+  assert.equal(document.settings.provider, "openai_compatible");
+  assert.equal(document.settings.token_limit_field, "max_completion_tokens");
+  assert.equal(document.settings.api_key, "new-compatible-key");
+  assert.equal(document.settings.base_url, "https://compatible.invalid/custom/v1/");
+  assert.equal(document.settings.model, "provider/model-name");
+  assert.equal(document.settings.thinking, false);
+});
+
+test("unknown provider options and incompatible settings fail closed without exposing credentials", async () => {
+  for (const patch of [
+    { provider: "unknown" },
+    { provider: null },
+    { token_limit_field: "unknown" },
+    { token_limit_field: null },
+    { token_limit_field: "max_completion_tokens" },
+    { provider: "openai_compatible", thinking: true }
+  ]) {
+    const app = new Harness();
+    await pair(app, { ...CONFIG, settings: { ...CONFIG.settings, ...patch } });
+    assert.equal(app.element("config-fields").disabled, true);
+    assert.equal(app.element("config-api-key").value, "");
+    assert.equal(app.element("config-save").disabled, true);
+    assert.equal(posts(app), 0);
+    assert.ok(!notices(app).includes(CONFIG.settings.api_key));
+  }
+});
+
+test("equivalent explicit defaults do not invalidate a dirty draft after a sessions import", async () => {
+  const app = new Harness();
+  await pair(app);
+  await app.edit("config-provider", "openai_compatible");
+  await app.edit("config-model", "unsent-compatible-model");
+  await pollStatus(app, true, "Confirm a sessions import.");
+  await pollStatus(app, false, "Sessions imported.");
+  (await app.nextCall("/api/config")).reply({
+    ...CONFIG,
+    settings: { ...CONFIG.settings, provider: "deepseek", token_limit_field: "max_tokens" }
+  });
+  await app.flush();
+  assert.equal(app.element("config-provider").value, "openai_compatible");
+  assert.equal(app.element("config-model").value, "unsent-compatible-model");
+  assert.equal(app.element("config-api-key").value, "");
+  assert.equal(app.element("config-fields").disabled, false);
+  assert.equal(app.element("config-save").disabled, false);
+  assert.equal(posts(app), 0);
 });
 
 test("typing creates only a draft; submit sends the complete config without sessions", async () => {

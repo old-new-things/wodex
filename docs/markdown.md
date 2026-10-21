@@ -2,7 +2,7 @@
 
 Wodex renders Markdown in assistant answers and in the optional thinking view.
 User prompts and the composer show their original text. Markdown source remains
-unchanged in saved history and in requests sent to DeepSeek.
+unchanged in saved history and in requests sent to the selected provider.
 
 The renderer runs in the Rust `no_std` application. SDL and SDL_ttf provide native
 font metrics and drawing; Markdown does not introduce a browser or web view.

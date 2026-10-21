@@ -52,6 +52,14 @@
           <fieldset id="config-fields" disabled>
             <legend class="visually-hidden">Configuration settings</legend>
             <div class="field-grid">
+              <div class="field full-width">
+                <label for="config-provider">Provider</label>
+                <select id="config-provider" name="provider" aria-describedby="provider-hint">
+                  <option value="deepseek">DeepSeek</option>
+                  <option value="openai_compatible">OpenAI-compatible</option>
+                </select>
+                <p id="provider-hint" class="field-hint">Changing provider clears the key from this draft and resets its endpoint, model and provider options. Configure the new provider before chatting.</p>
+              </div>
               <div class="field">
                 <label for="config-api-key">Saved API key</label>
                 <input id="config-api-key" name="api_key" type="password" autocomplete="off"
@@ -63,7 +71,13 @@
                 <label for="config-model">Model</label>
                 <input id="config-model" name="model" type="text" required maxlength="128"
                   autocapitalize="none" spellcheck="false" aria-describedby="model-hint">
-                <p id="model-hint" class="field-hint">Enter a model supported by your configured provider.</p>
+                <p id="model-hint" class="field-hint">Enter a model supported by your provider. A model is required before chatting.</p>
+              </div>
+              <div class="field full-width">
+                <label for="config-base-url">API endpoint</label>
+                <input id="config-base-url" name="base_url" type="text" required maxlength="2048"
+                  autocapitalize="none" spellcheck="false" aria-describedby="base-url-hint">
+                <p id="base-url-hint" class="field-hint">Use the provider’s HTTPS base URL including its API path, such as /v1. Wodex adds /chat/completions. Messages and the API key are sent here.</p>
               </div>
               <div class="field full-width">
                 <label for="config-system-prompt">Assistant instructions</label>
@@ -76,17 +90,19 @@
               <summary>Advanced settings</summary>
               <p class="advanced-hint">Provider settings determine where future messages and your saved API key are sent.</p>
               <div class="field-grid">
-                <div class="field full-width">
-                  <label for="config-base-url">API endpoint</label>
-                  <input id="config-base-url" name="base_url" type="text" required maxlength="2048"
-                    autocapitalize="none" spellcheck="false" aria-describedby="base-url-hint">
-                  <p id="base-url-hint" class="field-hint">Use the provider’s HTTPS base URL, without credentials, a query or a fragment.</p>
-                </div>
-                <div class="field toggle-field">
+                <div id="config-thinking-field" class="field toggle-field">
                   <label class="check-label" for="config-thinking">
-                    <input id="config-thinking" name="thinking" type="checkbox"> Thinking mode
+                    <input id="config-thinking" name="thinking" type="checkbox"> DeepSeek thinking mode
                   </label>
-                  <p class="field-hint">Request reasoning from a model that supports it.</p>
+                  <p class="field-hint">Request reasoning from a DeepSeek model that supports it.</p>
+                </div>
+                <div id="config-token-limit-choice" class="field" hidden>
+                  <label for="config-token-limit-field">Token limit field</label>
+                  <select id="config-token-limit-field" name="token_limit_field" aria-describedby="token-limit-field-hint">
+                    <option value="max_tokens">max_tokens</option>
+                    <option value="max_completion_tokens">max_completion_tokens</option>
+                  </select>
+                  <p id="token-limit-field-hint" class="field-hint">Choose the field supported by your model. Some OpenAI models require max_completion_tokens.</p>
                 </div>
                 <div class="field">
                   <label for="config-max-tokens">Response token limit</label>
@@ -122,7 +138,7 @@
       <section class="channel" aria-labelledby="config-heading">
         <span class="number" aria-hidden="true">01 / BACKUP</span>
         <h2 id="config-heading">Configuration</h2>
-        <p>Saved API key, endpoint, model, system prompt, and preferences.</p>
+        <p>Provider, saved API key, endpoint, model, system prompt, and preferences.</p>
         <p class="detail">Configuration files include your saved API key. Keep the downloaded file private.</p>
         <button class="download" data-channel="config" type="button">Download configuration</button>
         <div class="import">

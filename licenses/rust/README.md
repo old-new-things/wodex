@@ -12,6 +12,12 @@ upstream commit listed below: released `pulldown-cmark` 0.13.4 still requires
 Its `std`, HTML-renderer, command-line and SIMD features are disabled.
 Replace the pin with a published no_std-compatible release when available.
 
+Chat Completions requests and streamed chunks use Tokn's endpoint crates,
+pinned to [`67010af688a3eabd42dc287c5497d369d0cb2db6`](https://github.com/tokn-ai/tokn/tree/67010af688a3eabd42dc287c5497d369d0cb2db6).
+Their default features are disabled, keeping the target graph `no_std + alloc`.
+The endpoint procedural macro runs on the host. The Tokn license below is
+copied without alteration from that commit's repository-level `LICENSE`.
+
 PNG/JPEG previews use `zune-png`, `zune-jpeg` and `zune-core` with default
 features disabled. Their portable Rust decoding and the PNG inflater remain
 `no_std`. `zune-inflate` 0.2.54 omits license files from its published archive;
@@ -49,7 +55,12 @@ platforms but is not selected by this Switch dependency graph.
 | [serde_json 1.0.154](https://crates.io/crates/serde_json/1.0.154) | Target dependency | [LICENSE-MIT](serde_json-1.0.154/LICENSE-MIT) |
 | [sha2 0.10.9](https://crates.io/crates/sha2/0.10.9) | Target dependency | [LICENSE-MIT](sha2-0.10.9/LICENSE-MIT) |
 | [simd-adler32 0.3.10](https://crates.io/crates/simd-adler32/0.3.10) | Target dependency | [MIT license](simd-adler32-0.3.10/LICENSE.md) |
+| [syn 2.0.119](https://crates.io/crates/syn/2.0.119) | Build dependency; not linked into the NRO | [LICENSE-MIT](syn-2.0.119/LICENSE-MIT) |
 | [syn 3.0.9](https://crates.io/crates/syn/3.0.9) | Build dependency; not linked into the NRO | [LICENSE-MIT](syn-3.0.9/LICENSE-MIT) |
+| [thiserror 2.0.21](https://crates.io/crates/thiserror/2.0.21) | Target dependency | [LICENSE-MIT](thiserror-2.0.21/LICENSE-MIT) |
+| [thiserror-impl 2.0.21](https://crates.io/crates/thiserror-impl/2.0.21) | Build dependency; not linked into the NRO | [LICENSE-MIT](thiserror-impl-2.0.21/LICENSE-MIT) |
+| [tokn-endpoint-chat-completions and tokn-endpoint-core `67010af6`](https://github.com/tokn-ai/tokn/tree/67010af688a3eabd42dc287c5497d369d0cb2db6) | Target dependencies; upstream manifest version 0.2.4 | [MIT license](tokn-67010af6/LICENSE) |
+| [tokn-endpoint-macros `67010af6`](https://github.com/tokn-ai/tokn/tree/67010af688a3eabd42dc287c5497d369d0cb2db6) | Build dependency; not linked into the NRO | [MIT license](tokn-67010af6/LICENSE) |
 | [typenum 1.20.1](https://crates.io/crates/typenum/1.20.1) | Target dependency | [LICENSE-MIT](typenum-1.20.1/LICENSE-MIT) |
 | [unicase 2.10.0](https://crates.io/crates/unicase/2.10.0) | Target dependency | [LICENSE-MIT](unicase-2.10.0/LICENSE-MIT) |
 | [unicode-ident 1.0.27](https://crates.io/crates/unicode-ident/1.0.27) | Build dependency; not linked into the NRO | [LICENSE-MIT](unicode-ident-1.0.27/LICENSE-MIT), [LICENSE-UNICODE](unicode-ident-1.0.27/LICENSE-UNICODE) |

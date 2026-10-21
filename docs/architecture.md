@@ -1,10 +1,12 @@
 # Architecture and Switch builds
 
-Wodex is a native Nintendo Switch homebrew client with a desktop development build. It sends requests directly to the configured DeepSeek-compatible API. Its interface runs locally; a static GitHub Pages site distributes builds and the Versions and Nightly update feeds.
+Wodex is a native Nintendo Switch homebrew client with a desktop development build. It sends requests directly to DeepSeek or an OpenAI-compatible Chat Completions API. Its interface runs locally; a static GitHub Pages site distributes builds and the Versions and Nightly update feeds.
 
 ## Responsibilities
 
 - `core/` contains the Rust application and conversation engine. The Switch build uses `no_std` plus `alloc`; desktop builds and host tests use the same code with Rust's standard library.
+- `core/src/provider.rs` builds typed Tokn Chat Completions requests and applies provider-specific options. The pinned endpoint/core crates disable default features; their procedural macros run on the build host. The gateway, account routing, OAuth, Tokio and Reqwest are not dependencies. `stream.rs` retains the bounded incremental SSE framer and decodes chunks using Tokn's types, normalizing text, reasoning, finish reasons and numeric usage into the existing conversation engine.
+- Settings retain one active provider configuration. A provider switch clears the credential and resets endpoint/model/options before applying explicit replacement fields. Missing provider and token-limit fields mean DeepSeek and `max_tokens`; default fields are omitted on serialization so existing DeepSeek saves keep their previous shape. OpenAI-compatible saves require a build that understands the new fields. Desktop environment keys are selected by provider and never replace saved/exported credentials.
 - `core/src/app.rs` owns application actions, navigation, streaming coordination, saving, update decisions and confirmed PC imports. It calls the conversation engine through typed commands and borrows validated state directly. Views never serialize or copy the conversation history to cross a language boundary.
 - `core/src/app/view.rs` draws chat, settings, updates, HOME Menu installation, PC transfer, sidebar and the editor at a logical 1280×720 resolution. Interactive regions carry typed actions rather than native closures.
 - `core/src/app/editor.rs` owns UTF-8 cursor movement, selection, clipboard insertion and IME composition. Oversized or NUL-containing insertion preserves the existing draft.

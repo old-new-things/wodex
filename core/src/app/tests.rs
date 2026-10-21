@@ -2,6 +2,7 @@ use super::*;
 use crate::backend::home_menu::HomeMenuStatus;
 use crate::backend::images::ImageResult;
 use crate::backend::transfer::{TransferExports, TransferImport, TransferStatus};
+use crate::provider::{Provider, TokenLimitField};
 use crate::state::MessageStatus;
 use alloc::{collections::VecDeque, vec};
 
@@ -11,6 +12,7 @@ struct MockHost {
   writes: Vec<String>,
   recovery: Vec<Vec<u8>>,
   environment_key: String,
+  openai_environment_key: String,
   requests: Vec<(String, String, String)>,
   transport: VecDeque<TransportEvent>,
   inputs: VecDeque<Input>,
@@ -86,8 +88,11 @@ impl Host for MockHost {
     self.recovery.push(content.to_vec());
     Ok(())
   }
-  fn environment_key(&self) -> String {
-    self.environment_key.clone()
+  fn environment_key(&self, provider: Provider) -> String {
+    match provider {
+      Provider::DeepSeek => self.environment_key.clone(),
+      Provider::OpenAiCompatible => self.openai_environment_key.clone(),
+    }
   }
   fn start(&mut self, url: &str, key: &str, body: &str) -> Result<(), String> {
     if self.fail_start {
@@ -717,6 +722,127 @@ fn switch_keyboard_result_is_committed_through_the_same_rust_actions() {
 }
 
 #[test]
+fn provider_selection_resets_credentials_and_exposes_only_matching_options() {
+  let mut app = App::new(MockHost::default(), "0.2.1", false, false).unwrap();
+  app.commit_edit(EditTarget::Setting(Setting::ApiKey), "saved-deepseek-key".into());
+  app.edit_setting(Setting::Thinking);
+  app.dispatch(Action::Provider(Provider::OpenAiCompatible));
+  let settings = &app.core.state().settings;
+  assert_eq!(settings.provider, Provider::OpenAiCompatible);
+  assert!(settings.api_key.is_empty());
+  assert!(settings.model.is_empty());
+  assert!(!settings.thinking);
+  assert_eq!(settings.base_url, "https://api.openai.com/v1");
+  assert_eq!(last_saved(&app)["settings"]["api_key"], "");
+  assert_eq!(last_saved(&app)["settings"]["provider"], "openai_compatible");
+
+  let writes = app.host.writes.len();
+  app.edit_setting(Setting::Thinking);
+  assert_eq!(app.host.writes.len(), writes);
+  app.edit_setting(Setting::TokenLimitField);
+  assert_eq!(app.core.state().settings.token_limit_field, TokenLimitField::MaxCompletionTokens);
+  app.commit_edit(EditTarget::Setting(Setting::Model), "provider-model".into());
+  app.commit_edit(EditTarget::Setting(Setting::ApiKey), "saved-compatible-key".into());
+  let writes = app.host.writes.len();
+  app.dispatch(Action::Provider(Provider::OpenAiCompatible));
+  assert_eq!(app.core.state().settings.api_key, "saved-compatible-key");
+  assert_eq!(app.core.state().settings.model, "provider-model");
+  assert_eq!(app.host.writes.len(), writes);
+
+  app.dispatch(Action::Provider(Provider::DeepSeek));
+  let settings = &app.core.state().settings;
+  assert!(settings.api_key.is_empty());
+  assert_eq!(settings.model, "deepseek-flash");
+  assert_eq!(settings.base_url, "https://api.deepseek.com");
+  assert_eq!(settings.token_limit_field, TokenLimitField::MaxTokens);
+  let writes = app.host.writes.len();
+  app.edit_setting(Setting::TokenLimitField);
+  assert_eq!(app.host.writes.len(), writes);
+  assert!(app.host.requests.is_empty());
+}
+
+#[test]
+fn provider_controls_remain_reachable_with_controller_navigation() {
+  let mut app = app();
+  let (_backend, mut canvas) = canvas::test_backend::canvas();
+  app.ui.page = Page::Settings;
+  app.render(&mut canvas).unwrap();
+  app.ui.focused = "provider-deepseek".into();
+  app.input(Input::Gamepad(14));
+  assert_eq!(app.ui.focused, "provider-openai");
+  app.input(Input::Gamepad(0));
+  assert_eq!(app.core.state().settings.provider, Provider::OpenAiCompatible);
+  assert!(app.buttons.is_empty());
+  app.render(&mut canvas).unwrap();
+  app.input(Input::Gamepad(12));
+  assert_eq!(app.ui.focused, "setting-api_key");
+  for expected in [
+    "model-setting",
+    "setting-base_url",
+    "setting-token_limit_field",
+    "setting-system_prompt",
+    "setting-max_tokens",
+  ] {
+    app.input(Input::Gamepad(12));
+    assert_eq!(app.ui.focused, expected);
+  }
+  app.ui.focused = "provider-openai".into();
+  app.input(Input::Gamepad(11));
+  assert_eq!(app.ui.focused, "updates");
+  app.input(Input::Gamepad(13));
+  assert_eq!(app.ui.focused, "home-menu");
+  app.input(Input::Gamepad(13));
+  assert_eq!(app.ui.focused, "transfer");
+}
+
+#[test]
+fn provider_change_is_blocked_during_response_and_active_transfer() {
+  let mut app = app();
+  app.ui.draft = "question".into();
+  app.send();
+  app.dispatch(Action::Provider(Provider::OpenAiCompatible));
+  assert_eq!(app.core.state().settings.provider, Provider::DeepSeek);
+  assert_eq!(app.host.requests.len(), 1);
+  app.stop();
+  app.host.network_active = false;
+  app.show_transfer();
+  app.dispatch(Action::TransferStart);
+  app.dispatch(Action::Provider(Provider::OpenAiCompatible));
+  assert_eq!(app.core.state().settings.provider, Provider::DeepSeek);
+}
+
+#[test]
+fn environment_credentials_are_isolated_when_switching_providers() {
+  for openai_key in ["", "openai-environment-secret"] {
+    let host = MockHost {
+      environment_key: "deepseek-environment-secret".into(),
+      openai_environment_key: openai_key.into(),
+      ..Default::default()
+    };
+    let mut app = App::new(host, "0.2.1", false, false).unwrap();
+    assert_eq!(app.core.state().settings.api_key, "deepseek-environment-secret");
+    app.dispatch(Action::Provider(Provider::OpenAiCompatible));
+    assert_eq!(app.core.state().settings.api_key, openai_key);
+    assert_eq!(app.ui.environment_key, !openai_key.is_empty());
+    app.commit_edit(EditTarget::Setting(Setting::Model), "provider-model".into());
+    app.ui.draft = "question".into();
+    app.send();
+    if openai_key.is_empty() {
+      assert!(app.host.requests.is_empty());
+      assert!(!app.streaming());
+    } else {
+      assert_eq!(app.host.requests[0].1, openai_key);
+      app.stop();
+      app.host.network_active = false;
+    }
+    app.dispatch(Action::Provider(Provider::DeepSeek));
+    assert_eq!(app.core.state().settings.api_key, "deepseek-environment-secret");
+    assert_eq!(last_saved(&app)["settings"]["api_key"], "");
+    assert!(app.host.writes.iter().all(|saved| !saved.contains("environment-secret")));
+  }
+}
+
+#[test]
 fn page_change_invalidates_stale_buttons_and_delete_requires_confirmation() {
   let mut app = app();
   app.buttons.push(Button {
@@ -752,10 +878,20 @@ fn demo_is_offline_and_does_not_read_or_write_user_history() {
 }
 
 fn queue_config_import(app: &mut App<MockHost>, key: &str, model: &str) {
+  queue_provider_config_import(app, Provider::DeepSeek, key, model);
+}
+
+fn queue_provider_config_import(
+  app: &mut App<MockHost>,
+  provider: Provider,
+  key: &str,
+  model: &str,
+) {
   let mut source = WodexCore::default();
   source
     .execute(Command::Settings {
       settings: SettingsPatch {
+        provider: Some(provider),
         api_key: Some(key.into()),
         model: Some(model.into()),
         ..Default::default()
@@ -831,6 +967,56 @@ fn pc_transfer_exports_saved_key_and_keeps_environment_key_private() {
   assert!(app.host.transfer_exports.last().unwrap().config.contains("imported-private-key"));
   assert!(!app.host.transfer_exports.last().unwrap().config.contains("environment-private-key"));
   assert!(app.host.requests.is_empty());
+}
+
+#[test]
+fn provider_import_uses_matching_environment_key_and_exports_only_saved_key() {
+  for openai_key in ["", "openai-environment-secret"] {
+    let host = MockHost {
+      environment_key: "deepseek-environment-secret".into(),
+      openai_environment_key: openai_key.into(),
+      ..Default::default()
+    };
+    let mut app = App::new(host, "0.2.1", false, false).unwrap();
+    app.show_transfer();
+    app.dispatch(Action::TransferStart);
+    queue_provider_config_import(
+      &mut app,
+      Provider::OpenAiCompatible,
+      "imported-saved-key",
+      "provider-model",
+    );
+    app.dispatch(Action::TransferConfirm);
+    assert_eq!(app.core.state().settings.provider, Provider::OpenAiCompatible);
+    assert_eq!(
+      app.core.state().settings.api_key,
+      if openai_key.is_empty() { "imported-saved-key" } else { openai_key }
+    );
+    assert_eq!(last_saved(&app)["settings"]["api_key"], "imported-saved-key");
+    let export = &app.host.transfer_exports.last().unwrap().config;
+    assert!(export.contains("imported-saved-key"));
+    assert!(!export.contains("environment-secret"));
+    assert!(app.host.requests.is_empty());
+  }
+}
+
+#[test]
+fn session_import_keeps_a_manually_edited_key_instead_of_reapplying_environment() {
+  let mut app = app();
+  app.commit_edit(EditTarget::Setting(Setting::ApiKey), "manually-selected-key".into());
+  assert!(!app.ui.environment_key);
+  app.show_transfer();
+  app.dispatch(Action::TransferStart);
+  app.host.transfer_imports.push_back(TransferImport {
+    channel: TransferChannel::Sessions,
+    data: WodexCore::default().export_transfer(TransferChannel::Sessions).unwrap(),
+  });
+  app.tick();
+  app.dispatch(Action::TransferConfirm);
+  assert_eq!(app.core.state().settings.api_key, "manually-selected-key");
+  assert!(!app.ui.environment_key);
+  assert_eq!(last_saved(&app)["settings"]["api_key"], "manually-selected-key");
+  assert!(!app.host.transfer_exports.last().unwrap().config.contains("test-key"));
 }
 
 #[test]

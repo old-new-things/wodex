@@ -1,5 +1,7 @@
 use alloc::{string::String, vec::Vec};
 use serde_json::Value;
+use tokn_endpoint_chat_completions::ChatChunk;
+use tokn_endpoint_core::FinishReason;
 
 const MAX_LINE_BYTES: usize = 256 * 1024;
 const MAX_EVENT_BYTES: usize = 512 * 1024;
@@ -136,7 +138,7 @@ impl Stream {
     if text.is_empty() {
       return Ok(None);
     }
-    let value: Value = serde_json::from_str(text)
+    let mut value: Value = serde_json::from_str(text)
       .map_err(|_| String::from("The server sent an invalid JSON stream event."))?;
     if !value.is_object() {
       return Err("The server sent a non-object stream event.".into());
@@ -149,33 +151,41 @@ impl Stream {
         .unwrap_or("The API returned an error.");
       return Ok(Some(Event::Error(message.into())));
     }
-    if let Some(usage) = value.get("usage").filter(|usage| usage.is_object()) {
-      // Save only numeric counters instead of arbitrary server-provided data.
+    normalize_chunk(&mut value);
+    let chunk: ChatChunk = serde_json::from_value(value)
+      .map_err(|_| String::from("The server sent an invalid chat stream event."))?;
+    if let Some(usage) = chunk.usage {
       let mut counters = serde_json::Map::new();
-      for key in ["prompt_tokens", "completion_tokens", "total_tokens"] {
-        if let Some(value) = usage.get(key).and_then(Value::as_u64) {
+      for (key, value) in [
+        ("prompt_tokens", usage.prompt_tokens),
+        ("completion_tokens", usage.completion_tokens),
+        ("total_tokens", usage.total_tokens),
+      ] {
+        if let Some(value) = value {
           counters.insert(key.into(), value.into());
         }
       }
       self.usage = Some(Value::Object(counters));
     }
-    let Some(choices) = value.get("choices").and_then(Value::as_array) else {
-      return Ok(None);
-    };
-    let choice = choices
-      .iter()
-      .find(|choice| choice.get("index").and_then(Value::as_u64) == Some(0))
-      .or_else(|| choices.first().filter(|choice| choice.get("index").is_none()));
-    let Some(choice) = choice else { return Ok(None) };
-    if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
+    let Some(choice) = chunk.choices.into_iter().next() else { return Ok(None) };
+    if let Some(reason) = choice.finish_reason {
+      let reason = match reason {
+        FinishReason::Stop => String::from("stop"),
+        FinishReason::Length => String::from("length"),
+        FinishReason::ToolCalls => String::from("tool_calls"),
+        FinishReason::ContentFilter => String::from("content_filter"),
+        FinishReason::Other(reason) => reason,
+      };
       if reason.is_empty() || reason.len() > 64 || reason.chars().any(char::is_control) {
         return Err("The server sent an invalid finish reason.".into());
       }
-      self.finish_reason = Some(reason.into());
+      self.finish_reason = Some(reason);
     }
-    let Some(delta) = choice.get("delta") else { return Ok(None) };
-    let content = read_text(delta, "content")?;
-    let reasoning = read_text(delta, "reasoning_content")?;
+    let content = choice.delta.content.unwrap_or_default();
+    let reasoning = choice.delta.reasoning_content.unwrap_or_default();
+    if content.contains('\0') || reasoning.contains('\0') {
+      return Err("The server sent a NUL character in its response.".into());
+    }
     if content.is_empty() && reasoning.is_empty() {
       return Ok(None);
     }
@@ -183,12 +193,37 @@ impl Stream {
   }
 }
 
-fn read_text(value: &Value, key: &str) -> Result<String, String> {
-  match value.get(key) {
-    None | Some(Value::Null) => Ok(String::new()),
-    Some(Value::String(text)) if !text.contains('\0') => Ok(text.clone()),
-    _ => Err("The server sent a non-text chat delta.".into()),
+// Preserve Wodex's compatibility policy before decoding Tokn's typed schema:
+// retain only choice zero, allow finish-only chunks, and ignore nonnumeric
+// usage extensions. Bounds are enforced by the SSE framer before this step.
+fn normalize_chunk(value: &mut Value) {
+  let object = value.as_object_mut().expect("stream event was checked as an object");
+  if let Some(Value::Object(usage)) = object.remove("usage") {
+    let mut counters = serde_json::Map::new();
+    for key in ["prompt_tokens", "completion_tokens", "total_tokens"] {
+      if let Some(value) = usage.get(key).and_then(Value::as_u64) {
+        counters.insert(key.into(), value.into());
+      }
+    }
+    object.insert("usage".into(), Value::Object(counters));
   }
+  let mut selected = Vec::new();
+  if let Some(Value::Array(mut choices)) = object.remove("choices") {
+    let index = choices
+      .iter()
+      .position(|choice| choice.get("index").and_then(Value::as_u64) == Some(0))
+      .or_else(|| choices.first().filter(|choice| choice.get("index").is_none()).map(|_| 0));
+    if let Some(index) = index {
+      let mut choice = choices.swap_remove(index);
+      if let Some(object) = choice.as_object_mut() {
+        if object.get("delta").is_none_or(Value::is_null) {
+          object.insert("delta".into(), Value::Object(Default::default()));
+        }
+      }
+      selected.push(choice);
+    }
+  }
+  object.insert("choices".into(), Value::Array(selected));
 }
 
 #[cfg(test)]
@@ -258,5 +293,44 @@ mod tests {
       Stream::default().feed(format!("data: {}", "x".repeat(MAX_LINE_BYTES)).as_bytes()).last(),
       Some(Event::Error(_))
     ));
+  }
+
+  #[test]
+  fn compatible_chunks_keep_primary_choice_and_finish_only_events() {
+    let mut stream = Stream::default();
+    let events = stream.feed(
+      concat!(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"fallback\"}},",
+        "{\"index\":1,\"delta\":{\"content\":\"other\"}},",
+        "{\"index\":0,\"delta\":{\"content\":\"primary\"}}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"finish_reason\":\"custom_stop\"}]}\n\n",
+        "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":-1,",
+        "\"total_tokens\":\"invalid\",\"provider_secret\":\"discard\"}}\n\n",
+        "data: [DONE]\n\n"
+      )
+      .as_bytes(),
+    );
+    assert_eq!(events, vec![Event::Delta { content: "primary".into(), reasoning: String::new() }]);
+    assert_eq!(stream.finish_reason.as_deref(), Some("custom_stop"));
+    assert_eq!(stream.usage, Some(serde_json::json!({"prompt_tokens":4})));
+    assert!(stream.done);
+  }
+
+  #[test]
+  fn typed_events_reject_invalid_text_and_finish_metadata() {
+    for value in [
+      serde_json::json!({"choices":[{"delta":{"content":["not text"]}}]}),
+      serde_json::json!({"choices":[{"delta":{"reasoning_content":false}}]}),
+      serde_json::json!({"choices":[{"delta":{"content":"contains\0nul"}}]}),
+      serde_json::json!({"choices":[{"delta":{},"finish_reason":""}]}),
+      serde_json::json!({"choices":[{"delta":{},"finish_reason":"x".repeat(65)}]}),
+    ] {
+      let mut stream = Stream::default();
+      assert!(matches!(
+        stream.feed(format!("data: {value}\n\n").as_bytes()).last(),
+        Some(Event::Error(_))
+      ));
+      assert!(stream.done);
+    }
   }
 }

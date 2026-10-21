@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { createContext, runInContext } from "node:vm";
 
 type Listener = (event: FakeEvent) => unknown;
-type FakeEvent = { target: Element; currentTarget: Element; preventDefault(): void };
+type FakeEvent = { type: string; target: Element; currentTarget: Element; preventDefault(): void };
 
 export class Element {
   id = "";
@@ -61,7 +61,7 @@ export class Element {
   async dispatch(name: string): Promise<void> {
     const results: unknown[] = [];
     let current: Element | null = this;
-    const event: FakeEvent = { target: this, currentTarget: this, preventDefault() {} };
+    const event: FakeEvent = { type: name, target: this, currentTarget: this, preventDefault() {} };
     while (current) {
       event.currentTarget = current;
       for (const listener of current.listeners.get(name) || []) results.push(listener(event));

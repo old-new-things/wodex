@@ -13,15 +13,15 @@ Current nightlies support two independent JSON transfer channels: **Configuratio
 
 Keep Wodex on the transfer page while connected. On-device chatting and editing, image downloads and update operations stay paused during transfer. Closing or disconnecting the browser clears its pairing state but does not stop the Switch listener; stop it in Wodex as well. Desktop development builds support the same flow; offline demo mode does not start a server.
 
-Transfers use **HTTP without TLS**. Use a trusted local network: the pairing code controls access but does not encrypt traffic. The configuration form loads the **saved DeepSeek API key**, and configuration downloads include it. A desktop `DEEPSEEK_API_KEY` environment override is never shown in the form, exported or written into the file; it continues overriding the runtime key after import. Keep downloaded configuration and session files private.
+Transfers use **HTTP without TLS**. Use a trusted local network: the pairing code controls access but does not encrypt traffic. The configuration form loads the **saved provider API key**, and configuration downloads include it. Desktop `DEEPSEEK_API_KEY` and `OPENAI_API_KEY` overrides are never shown in the form, exported or written into the file. After import, Wodex resolves only the selected provider's environment key. Keep downloaded configuration and session files private.
 
 If the page cannot connect, check that the full address is current, both devices can reach one another, and the network does not isolate Wi-Fi clients. Restart transfer after changing networks. Wodex does not configure router port forwarding.
 
 ## Edit configuration in the browser
 
-The form provides **Saved API key**, **Model** and multiline **Assistant instructions**. The key is masked by default; **Show API key** reveals it. Leaving the key field empty clears the saved key when you send and confirm the change.
+The form provides **Provider**, **Saved API key**, **API endpoint**, **Model** and multiline **Assistant instructions**. The key is masked by default; **Show API key** reveals it. Leaving the key field empty clears the saved key when you send and confirm the change. Choosing a different provider clears and masks the draft key, resets its endpoint/model/options, and keeps the instructions and response limit. Only one provider configuration is stored; export a backup before switching to retain it.
 
-Expand **Advanced settings** to edit the API endpoint, thinking mode, response token limit, update repository and update channel. The browser checks field limits before sending; Wodex performs the authoritative validation before offering confirmation. An empty update repository disables the update source.
+Expand **Advanced settings** to edit DeepSeek thinking mode or the OpenAI-compatible token-limit field, response token limit, update repository and update channel. OpenAI-compatible mode supports `max_tokens` and `max_completion_tokens`; choose the field accepted by the provider/model. Its model starts empty and must be set before chatting. The base URL must include the API path; Wodex appends `/chat/completions`. The browser checks field limits before sending; Wodex performs the authoritative validation before offering confirmation. An empty update repository disables the update source.
 
 Edits stay in the current page until you choose **Send changes to Switch**, and saved configuration changes only after device confirmation. Sessions remain unchanged. **Reload saved configuration** replaces the form with the device's saved values and asks before discarding unsent edits. JSON download and upload remain available alongside the form.
 
@@ -29,7 +29,7 @@ After you confirm or reject a submitted form on the Switch, the editor reloads t
 
 ## Files and replacement behavior
 
-Configuration contains the saved API key, endpoint, model, thinking mode, response limit, assistant instructions and update settings. Importing it replaces those settings while preserving every conversation. Imported provider settings determine where future messages and the API key are sent; importing itself makes no provider request.
+Configuration contains the provider, saved API key, endpoint, model, provider options, response limit, assistant instructions and update settings. Importing it replaces those settings while preserving every conversation. Imported provider settings determine where future messages and the API key are sent; importing itself makes no provider request.
 
 Sessions contain every conversation, message, reasoning text and the selected conversation. Importing sessions replaces all existing sessions while preserving configuration. It does not merge chats. A response marked `streaming` in a file becomes `interrupted` when restored.
 
@@ -55,6 +55,8 @@ A configuration document has this shape:
 ```
 
 The empty API key above is an example, not a redaction performed by export. Exported files contain the actual saved key. `update_channel` accepts `version` or `nightly`.
+
+The optional `provider` field accepts `deepseek` (default) or `openai_compatible`. The optional `token_limit_field` accepts `max_tokens` (default) or `max_completion_tokens`. Defaults are omitted in exports, keeping existing DeepSeek backups compatible. OpenAI-compatible configuration includes `"provider": "openai_compatible"` and requires `thinking: false`; DeepSeek requires the default token-limit field. Older Wodex builds cannot read the new nondefault fields, so export a DeepSeek configuration and your sessions before downgrading. The existing unreadable-save recovery behavior preserves unsupported saves.
 
 A minimal sessions document contains one empty conversation:
 

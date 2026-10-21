@@ -7,6 +7,7 @@ mod backend;
 mod build_identity;
 mod build_metadata;
 mod ffi;
+mod provider;
 mod state;
 mod stream;
 mod update;

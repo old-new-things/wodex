@@ -12,15 +12,33 @@ function readConfiguration(value) {
         (settings.update_channel !== "version" && settings.update_channel !== "nightly")) {
         throw new Error("Unsupported configuration from Wodex. Reload using a matching app version.");
     }
-    validateConfiguration(settings);
-    return { schema_version: 1, channel: "config", settings: { ...settings } };
+    const normalized = {
+        ...settings,
+        provider: settings.provider === undefined ? "deepseek" : settings.provider,
+        token_limit_field: settings.token_limit_field === undefined ? "max_tokens" : settings.token_limit_field
+    };
+    validateConfiguration(normalized);
+    return { schema_version: 1, channel: "config", settings: normalized };
 }
 function validateConfiguration(settings) {
     const bytes = (text) => new TextEncoder().encode(text).length;
+    if (settings.provider !== "deepseek" && settings.provider !== "openai_compatible") {
+        throw new Error("Choose DeepSeek or OpenAI-compatible as the provider.");
+    }
+    if (settings.token_limit_field !== "max_tokens" && settings.token_limit_field !== "max_completion_tokens") {
+        throw new Error("Choose max_tokens or max_completion_tokens for the token limit field.");
+    }
+    if (settings.provider === "deepseek" && settings.token_limit_field !== "max_tokens") {
+        throw new Error("DeepSeek uses max_tokens for its response token limit.");
+    }
+    if (settings.provider === "openai_compatible" && settings.thinking) {
+        throw new Error("Thinking mode is available only with the DeepSeek provider.");
+    }
     if (bytes(settings.api_key) > 4096 || /[\p{White_Space}\p{Cc}]/u.test(settings.api_key)) {
         throw new Error("The API key must contain no spaces or control characters and be at most 4096 bytes.");
     }
-    if (!/^[A-Za-z0-9_./:-]{1,128}$/.test(settings.model)) {
+    if (!(settings.provider === "openai_compatible" && settings.model === "") &&
+        !/^[A-Za-z0-9_./:-]{1,128}$/.test(settings.model)) {
         throw new Error("Enter a model name of at most 128 ASCII letters, numbers, or _ . / : - characters.");
     }
     if (!Number.isInteger(settings.max_tokens) || settings.max_tokens < 1 || settings.max_tokens > 131072) {
@@ -64,20 +82,31 @@ class ConfigurationEditor {
         this.fields = element("config-fields");
         this.save = element("config-save");
         this.status = element("config-status");
+        this.provider = element("config-provider");
         this.apiKey = element("config-api-key");
         this.showKey = element("show-api-key");
         this.model = element("config-model");
         this.prompt = element("config-system-prompt");
         this.endpoint = element("config-base-url");
         this.thinking = element("config-thinking");
+        this.thinkingField = element("config-thinking-field");
+        this.tokenLimitField = element("config-token-limit-field");
+        this.tokenLimitChoice = element("config-token-limit-choice");
         this.maxTokens = element("config-max-tokens");
         this.repository = element("config-update-repository");
         this.channel = element("config-update-channel");
         this.baseline = null;
         this.stale = false;
-        const changed = () => {
+        this.selectedProvider = "deepseek";
+        const changed = (event) => {
+            // A select fires input followed by change. Apply its reset once, when
+            // the selection is committed, and keep the reset notice visible.
+            if (event.target === this.provider && event.type === "input")
+                return;
+            const switched = event.target === this.provider && this.switchProvider();
             if (this.baseline && !this.stale) {
-                this.notice(this.dirty() ? "Unsent changes. Send them to your Switch when ready." : "Showing saved configuration.");
+                this.notice(switched ? "Provider changed. The key was cleared from this draft; endpoint, model and provider options were reset. Review them before sending changes." :
+                    this.dirty() ? "Unsent changes. Send them to your Switch when ready." : "Showing saved configuration.");
             }
             onChange();
         };
@@ -98,7 +127,10 @@ class ConfigurationEditor {
             input.value = "";
         }
         this.channel.value = "version";
+        this.provider.value = this.selectedProvider = "deepseek";
+        this.tokenLimitField.value = "max_tokens";
         this.thinking.checked = false;
+        this.providerControls();
         this.maskKey();
         this.notice("Connect to load your saved configuration.");
     }
@@ -106,6 +138,8 @@ class ConfigurationEditor {
         this.baseline = document;
         this.stale = false;
         const settings = document.settings;
+        this.provider.value = this.selectedProvider = settings.provider;
+        this.tokenLimitField.value = settings.token_limit_field;
         this.apiKey.value = settings.api_key;
         this.model.value = settings.model;
         this.prompt.value = settings.system_prompt;
@@ -114,7 +148,29 @@ class ConfigurationEditor {
         this.maxTokens.value = String(settings.max_tokens);
         this.repository.value = settings.update_repository;
         this.channel.value = settings.update_channel;
+        this.providerControls();
         this.maskKey();
+    }
+    switchProvider() {
+        const provider = this.provider.value;
+        if ((provider !== "deepseek" && provider !== "openai_compatible") || provider === this.selectedProvider) {
+            return false;
+        }
+        this.selectedProvider = provider;
+        this.apiKey.value = "";
+        this.endpoint.value = provider === "deepseek" ? "https://api.deepseek.com" : "https://api.openai.com/v1";
+        this.model.value = provider === "deepseek" ? "deepseek-flash" : "";
+        this.thinking.checked = false;
+        this.tokenLimitField.value = "max_tokens";
+        this.providerControls();
+        this.maskKey();
+        return true;
+    }
+    providerControls() {
+        const deepseek = this.provider.value === "deepseek";
+        this.thinkingField.hidden = this.thinking.disabled = !deepseek;
+        this.tokenLimitChoice.hidden = this.tokenLimitField.disabled = deepseek;
+        this.model.required = deepseek;
     }
     reconcile(document, message) {
         if (!this.dirty()) {
@@ -139,6 +195,8 @@ class ConfigurationEditor {
     }
     values() {
         return {
+            provider: this.provider.value,
+            token_limit_field: this.tokenLimitField.value,
             api_key: this.apiKey.value,
             base_url: this.endpoint.value,
             model: this.model.value,
@@ -164,7 +222,17 @@ class ConfigurationEditor {
             throw new Error("The response token limit must be a whole number from 1 to 131072.");
         }
         validateConfiguration(settings);
-        return { schema_version: 1, channel: "config", settings: { ...this.baseline.settings, ...settings } };
+        const { provider, token_limit_field, ...shared } = { ...this.baseline.settings, ...settings };
+        // Keep default-provider documents readable by older Wodex versions.
+        return {
+            schema_version: 1,
+            channel: "config",
+            settings: {
+                ...shared,
+                ...(provider === "deepseek" ? {} : { provider }),
+                ...(token_limit_field === "max_tokens" ? {} : { token_limit_field })
+            }
+        };
     }
     requireReload(message) {
         this.stale = true;

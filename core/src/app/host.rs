@@ -11,6 +11,7 @@ use crate::backend::{
   updater::{PendingUpdate, Updater},
   BackendApi,
 };
+use crate::provider::Provider;
 use crate::update::UpdateChannel;
 use alloc::{collections::VecDeque, format, string::String, vec::Vec};
 use core::{ffi::c_void, slice};
@@ -123,7 +124,7 @@ pub trait Host {
   fn load(&mut self) -> Result<Vec<u8>, String>;
   fn save(&mut self, content: &str) -> Result<(), String>;
   fn preserve(&mut self, content: &[u8]) -> Result<(), String>;
-  fn environment_key(&self) -> String;
+  fn environment_key(&self, provider: Provider) -> String;
   fn start(&mut self, url: &str, key: &str, body: &str) -> Result<(), String>;
   fn cancel(&mut self);
   fn network_active(&self) -> bool;
@@ -327,8 +328,11 @@ impl Host for NativeHost {
   fn preserve(&mut self, content: &[u8]) -> Result<(), String> {
     self.fs.preserve_file(&self.save_path, content).map(|_| ())
   }
-  fn environment_key(&self) -> String {
-    self.fs.environment("DEEPSEEK_API_KEY")
+  fn environment_key(&self, provider: Provider) -> String {
+    self.fs.environment(match provider {
+      Provider::DeepSeek => "DEEPSEEK_API_KEY",
+      Provider::OpenAiCompatible => "OPENAI_API_KEY",
+    })
   }
   fn start(&mut self, url: &str, key: &str, body: &str) -> Result<(), String> {
     if self.home_menu.active() || self.transfer.active() {

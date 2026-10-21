@@ -82,13 +82,13 @@ int main(int argc, char **argv) {
     else if (argument == "--screenshot" && index + 1 < argc)
       screenshot_path = argv[++index];
     else if (argument == "--help") {
-      std::cout << "Wodex · a native DeepSeek client for Nintendo Switch\n"
+      std::cout << "Wodex · a native chat client for Nintendo Switch\n"
                    "  --demo                  Sample chat, no network or saves\n"
                    "  --updates               Open update settings\n"
                    "  --home-menu             Open HOME Menu installation settings\n"
                    "  --transfer              Open PC transfer settings\n"
                    "  --screenshot FILE.bmp   Render once and save a 1280×720 image\n"
-                   "Environment: DEEPSEEK_API_KEY, WODEX_DATA_DIR, WODEX_FONT, WODEX_CA_BUNDLE\n";
+                   "Environment: DEEPSEEK_API_KEY, OPENAI_API_KEY, WODEX_DATA_DIR, WODEX_FONT, WODEX_CA_BUNDLE\n";
       return 0;
     } else {
       std::cerr << "Unknown argument. Use --help.\n";
@@ -119,7 +119,7 @@ int main(int argc, char **argv) {
       SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
       SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS, "0");
       std::unique_ptr<SDL_Window, decltype(&SDL_DestroyWindow)> window(
-          SDL_CreateWindow("Wodex · DeepSeek for Switch", SDL_WINDOWPOS_CENTERED,
+          SDL_CreateWindow("Wodex · Chat for Switch", SDL_WINDOWPOS_CENTERED,
                            SDL_WINDOWPOS_CENTERED, 1280, 720,
                            SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI),
           SDL_DestroyWindow);

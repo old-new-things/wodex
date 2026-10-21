@@ -74,19 +74,10 @@ impl<H: Host> App<H> {
         app.ui.notice =
           "Saved data could not be read. A recovery copy is beside state.json.".into();
       }
-      let key = app.host.environment_key();
-      if !key.is_empty() {
-        let stored_key = app.core.state().settings.api_key.clone();
-        let patch = SettingsPatch { api_key: Some(key), ..Default::default() };
-        if app.core.execute(Command::Settings { settings: patch }).is_ok() {
-          app.stored_key = stored_key;
-          app.ui.environment_key = true;
-        } else {
-          app.ui.notice = "DEEPSEEK_API_KEY is invalid. Enter a valid key in Settings.".into();
-        }
-      }
+      app.apply_environment_key();
       if app.ui.notice.is_empty() && app.core.state().settings.api_key.is_empty() {
-        app.ui.notice = "Welcome to Wodex. Add your DeepSeek API key in Settings to begin.".into();
+        app.ui.notice =
+          "Welcome to Wodex. Choose your provider and add an API key in Settings.".into();
       }
     }
     if show_updates {
@@ -99,6 +90,25 @@ impl<H: Host> App<H> {
 
   pub fn running(&self) -> bool {
     self.running && self.host.running()
+  }
+
+  fn apply_environment_key(&mut self) {
+    self.ui.environment_key = false;
+    self.stored_key.clear();
+    let key = self.host.environment_key(self.core.state().settings.provider);
+    if key.is_empty() {
+      return;
+    }
+    let stored_key = self.core.state().settings.api_key.clone();
+    let patch = SettingsPatch { api_key: Some(key), ..Default::default() };
+    if self.core.execute(Command::Settings { settings: patch }).is_ok() {
+      self.stored_key = stored_key;
+      self.ui.environment_key = true;
+    } else {
+      self.ui.notice =
+        "The selected provider's environment API key is invalid. Enter a valid key in Settings."
+          .into();
+    }
   }
 
   pub fn set_image_loading(&mut self, enabled: bool) {
@@ -404,8 +414,9 @@ impl<H: Host> App<H> {
       let content = serde_json::to_string(&exported["data"])
         .map_err(|_| String::from("Could not serialize imported data."))?;
       let stored_key = prepared.core.state().settings.api_key.clone();
-      if self.ui.environment_key {
-        // Environment credentials apply only to runtime requests, never files or exports.
+      if channel == TransferChannel::Sessions && self.ui.environment_key {
+        // Sessions leave both saved credentials and the user's runtime
+        // override decision unchanged.
         prepared.core.execute(Command::Settings {
           settings: SettingsPatch {
             api_key: Some(self.core.state().settings.api_key.clone()),
@@ -428,7 +439,13 @@ impl<H: Host> App<H> {
         },
       };
       self.core = prepared.core;
-      self.stored_key = stored_key;
+      if channel == TransferChannel::Config {
+        // Resolve the imported provider's credential afresh. Reusing the old
+        // runtime key here could send a DeepSeek key to an unrelated service.
+        self.apply_environment_key();
+      } else {
+        self.stored_key = stored_key;
+      }
       self.last_save = self.host.now_ms();
       if channel == TransferChannel::Config {
         self.checked_source = None;
@@ -489,16 +506,26 @@ impl<H: Host> App<H> {
     if self.ui.storage_locked || self.host.transfer_active() {
       return None;
     }
+    let provider = self.core.state().settings.provider;
+    let editing_key =
+      matches!(&command, Command::Settings { settings } if settings.api_key.is_some());
     let result = self.core.execute(command);
     self.ui.notice = result.as_ref().err().cloned().unwrap_or_default();
+    if result.is_ok() {
+      if provider != self.core.state().settings.provider {
+        self.apply_environment_key();
+      } else if editing_key {
+        self.ui.environment_key = false;
+        self.stored_key.clear();
+      }
+    }
     self.save();
     result.ok()
   }
 
   fn start(&mut self, command: Command) {
     if self.demo {
-      self.ui.notice =
-        "Offline demo. Relaunch without --demo to connect your DeepSeek account.".into();
+      self.ui.notice = "Offline demo. Relaunch without --demo to connect your provider.".into();
       return;
     }
     if self.busy() {
@@ -666,7 +693,7 @@ impl<H: Host> App<H> {
     };
     let x = current.area.x + current.area.w / 2;
     let y = current.area.y + current.area.h / 2;
-    let mut best = f64::MAX;
+    let mut best = (true, f64::MAX);
     let mut candidate = &self.ui.focused;
     for button in &self.buttons {
       let tx = button.area.x + button.area.w / 2 - x;
@@ -675,8 +702,33 @@ impl<H: Host> App<H> {
       if forward <= 0 {
         continue;
       }
-      let sideways = if dx != 0 { ty.abs() } else { tx.abs() } as f64;
-      let score = forward as f64 + sideways * 3.0 + sideways * sideways / forward as f64;
+      // Wide settings rows overlap both provider buttons. Measure the gap
+      // between regions so moving down reaches the next row instead of
+      // skipping to a distant button whose center happens to line up.
+      let (start, end, target_start, target_end) = if dx != 0 {
+        (
+          current.area.y,
+          current.area.y + current.area.h,
+          button.area.y,
+          button.area.y + button.area.h,
+        )
+      } else {
+        (
+          current.area.x,
+          current.area.x + current.area.w,
+          button.area.x,
+          button.area.x + button.area.w,
+        )
+      };
+      let sideways = (start - target_end).max(target_start - end).max(0) as f64;
+      let center_offset = if dx != 0 { ty.abs() } else { tx.abs() } as f64;
+      let score = (
+        sideways > 0.0,
+        forward as f64
+          + sideways * 3.0
+          + sideways * sideways / forward as f64
+          + center_offset * 0.001,
+      );
       if score < best {
         best = score;
         candidate = &button.id;
@@ -735,6 +787,7 @@ impl<H: Host> App<H> {
       Action::Send => self.send(),
       Action::Stop => self.stop(),
       Action::EditSetting(setting) => self.edit_setting(setting),
+      Action::Provider(provider) => self.change_provider(provider),
       Action::Updates => {
         self.ui.page = Page::Updates;
         self.ui.confirm_delete = false;
@@ -924,7 +977,36 @@ impl<H: Host> App<H> {
     }
   }
 
+  fn change_provider(&mut self, provider: crate::provider::Provider) {
+    if self.busy() {
+      self.ui.notice = "Stop the current response before changing providers.".into();
+      return;
+    }
+    if self.core.state().settings.provider == provider {
+      return;
+    }
+    let patch = SettingsPatch { provider: Some(provider), ..Default::default() };
+    if self.mutate(Command::Settings { settings: patch }).is_some() {
+      if self.ui.notice.is_empty() {
+        self.ui.notice = if self.ui.environment_key {
+          "Provider changed. Its environment key is active; review the model and endpoint."
+        } else {
+          "Provider changed. Add your API key, then review the model and endpoint."
+        }
+        .into();
+      }
+      self.ui.focused = if provider == crate::provider::Provider::DeepSeek {
+        "provider-deepseek"
+      } else {
+        "provider-openai"
+      }
+      .into();
+      self.buttons.clear();
+    }
+  }
+
   fn edit_setting(&mut self, setting: Setting) {
+    use crate::provider::{Provider, TokenLimitField};
     self.ui.confirm_delete = false;
     if self.busy() {
       self.ui.notice = "Stop the current response before changing settings.".into();
@@ -935,10 +1017,26 @@ impl<H: Host> App<H> {
     }
     let settings = &self.core.state().settings;
     let (title, value, secret) = match setting {
-      Setting::ApiKey => ("DeepSeek API key", settings.api_key.clone(), true),
+      Setting::ApiKey => ("API key", settings.api_key.clone(), true),
       Setting::Model => ("Model", settings.model.clone(), false),
       Setting::Thinking => {
+        if settings.provider != Provider::DeepSeek {
+          return;
+        }
         let patch = SettingsPatch { thinking: Some(!settings.thinking), ..Default::default() };
+        self.mutate(Command::Settings { settings: patch });
+        return;
+      }
+      Setting::TokenLimitField => {
+        if settings.provider != Provider::OpenAiCompatible {
+          return;
+        }
+        let token_limit_field = match settings.token_limit_field {
+          TokenLimitField::MaxTokens => TokenLimitField::MaxCompletionTokens,
+          TokenLimitField::MaxCompletionTokens => TokenLimitField::MaxTokens,
+        };
+        let patch =
+          SettingsPatch { token_limit_field: Some(token_limit_field), ..Default::default() };
         self.mutate(Command::Settings { settings: patch });
         return;
       }
@@ -990,15 +1088,12 @@ impl<H: Host> App<H> {
         };
         patch.max_tokens = Some(tokens);
       }
-      Setting::Thinking => return,
+      Setting::Thinking | Setting::TokenLimitField => return,
     }
-    if self.mutate(Command::Settings { settings: patch }).is_some() {
-      if setting == Setting::ApiKey {
-        self.ui.environment_key = false;
-        self.save();
-      } else if setting == Setting::UpdateRepository {
-        self.invalidate_update_source();
-      }
+    if self.mutate(Command::Settings { settings: patch }).is_some()
+      && setting == Setting::UpdateRepository
+    {
+      self.invalidate_update_source();
     }
   }
 

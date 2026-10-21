@@ -6,6 +6,7 @@ use super::host::{UpdatePhase, UpdateStatus};
 use super::rich_text::RichTextCache;
 use crate::backend::home_menu::{HomeMenuPhase, HomeMenuStatus, NRO_PATH};
 use crate::backend::transfer::TransferStatus;
+use crate::provider::Provider;
 use crate::state::{Message, MessageStatus, Role, State, OFFICIAL_UPDATE_REPOSITORY};
 use crate::update::UpdateChannel;
 use alloc::{format, string::String, vec::Vec};
@@ -28,6 +29,7 @@ pub enum Setting {
   BaseUrl,
   SystemPrompt,
   MaxTokens,
+  TokenLimitField,
   UpdateRepository,
 }
 
@@ -42,6 +44,7 @@ pub enum Action {
   Send,
   Stop,
   EditSetting(Setting),
+  Provider(Provider),
   Updates,
   Retry,
   DeleteChat,
@@ -296,8 +299,10 @@ impl View<'_> {
     let settings = &state.settings;
     self.canvas.rect(rect(934, 23, 304, 36), ELEVATED, 18);
     self.canvas.rect(rect(950, 36, 8, 8), if demo { MUTED } else { ACCENT }, 4);
-    let thinking = if settings.thinking { "  ·  THINK" } else { "" };
-    self.canvas.text(&format!("{}{thinking}", preview(&settings.model, 22)), 968, 31, 15, INK, 0);
+    let thinking =
+      if settings.provider == Provider::DeepSeek && settings.thinking { "  ·  THINK" } else { "" };
+    let model = if settings.model.is_empty() { "Choose a model" } else { &settings.model };
+    self.canvas.text(&format!("{}{thinking}", preview(model, 22)), 968, 31, 15, INK, 0);
     self.add_button("model", rect(934, 23, 304, 36), Action::OpenModel);
     self.canvas.rect(rect(312, 80, 926, 1), BORDER, 0);
     let messages = state
@@ -340,9 +345,16 @@ impl View<'_> {
       self.canvas.text(&preview(status, 240), 320, 518, 16, DANGER, 900);
       self.canvas.unclip();
     } else if self.state.is_streaming {
-      self.canvas.text("●  DeepSeek is responding…  B to stop", 320, 525, 16, ACCENT, 0);
+      self.canvas.text(
+        &format!("●  {} is responding…  B to stop", settings.provider.label()),
+        320,
+        525,
+        16,
+        ACCENT,
+        0,
+      );
     } else {
-      let hint = if self.state.settings.thinking {
+      let hint = if settings.provider == Provider::DeepSeek && settings.thinking {
         "Thinking on · Y toggles reasoning detail"
       } else {
         "A little curiosity goes a long way."
@@ -425,7 +437,7 @@ impl View<'_> {
         let (x, width) = if user { (480, 738) } else { (322, 896) };
         self.canvas.rect(rect(x, y, width, height - 16), if user { ELEVATED } else { PANEL }, 10);
         self.canvas.text(
-          if user { "YOU" } else { "DEEPSEEK" },
+          if user { "YOU" } else { "ASSISTANT" },
           x + 20,
           y + 16,
           13,
@@ -488,6 +500,27 @@ impl View<'_> {
     self.button("updates", "Updates", rect(1030, 64, 206, 46), Action::Updates, false);
     let state = self.state;
     let settings = &state.settings;
+    self.canvas.text("Provider", 332, 143, 19, INK, 0);
+    for (provider, id, area) in [
+      (Provider::DeepSeek, "provider-deepseek", rect(600, 132, 256, 44)),
+      (Provider::OpenAiCompatible, "provider-openai", rect(872, 132, 364, 44)),
+    ] {
+      self.button(
+        id,
+        provider.label(),
+        area,
+        Action::Provider(provider),
+        settings.provider == provider,
+      );
+    }
+    self.canvas.text(
+      "Switching providers clears the saved key and resets the endpoint and model.",
+      332,
+      186,
+      14,
+      MUTED,
+      0,
+    );
     let key = if settings.api_key.is_empty() {
       "Add your key"
     } else if self.ui.environment_key {
@@ -497,27 +530,46 @@ impl View<'_> {
     };
     let prompt = preview(&settings.system_prompt, 64);
     let token_limit = format!("{}", settings.max_tokens);
-    let rows = [
-      (Setting::ApiKey, "setting-api_key", "DeepSeek API key", key),
-      (Setting::Model, "model-setting", "Model", settings.model.as_str()),
+    let provider_option = if settings.provider == Provider::DeepSeek {
       (
         Setting::Thinking,
         "setting-thinking",
         "Thinking mode",
         if settings.thinking { "On" } else { "Off" },
+      )
+    } else {
+      (
+        Setting::TokenLimitField,
+        "setting-token_limit_field",
+        "Token limit field",
+        settings.token_limit_field.label(),
+      )
+    };
+    let rows = [
+      (Setting::ApiKey, "setting-api_key", "API key", key),
+      (
+        Setting::Model,
+        "model-setting",
+        "Model",
+        if settings.model.is_empty() {
+          "Enter your provider's model name"
+        } else {
+          settings.model.as_str()
+        },
       ),
       (Setting::BaseUrl, "setting-base_url", "API endpoint", settings.base_url.as_str()),
+      provider_option,
       (Setting::SystemPrompt, "setting-system_prompt", "Assistant instructions", prompt.as_str()),
       (Setting::MaxTokens, "setting-max_tokens", "Response token limit", token_limit.as_str()),
     ];
     for (index, (setting, id, title, value)) in rows.into_iter().enumerate() {
-      let y = 132 + index as i32 * 62;
-      self.canvas.rect(rect(314, y, 922, 52), ELEVATED, 7);
-      self.canvas.text(title, 332, y + 14, 19, INK, 0);
-      self.canvas.clip(rect(626, y, 590, 52));
-      self.canvas.text(if value.is_empty() { "Default" } else { value }, 638, y + 15, 17, MUTED, 0);
+      let y = 218 + index as i32 * 50;
+      self.canvas.rect(rect(314, y, 922, 42), ELEVATED, 7);
+      self.canvas.text(title, 332, y + 10, 19, INK, 0);
+      self.canvas.clip(rect(626, y, 590, 42));
+      self.canvas.text(if value.is_empty() { "Default" } else { value }, 638, y + 11, 17, MUTED, 0);
       self.canvas.unclip();
-      self.add_button(id, rect(314, y, 922, 52), Action::EditSetting(setting));
+      self.add_button(id, rect(314, y, 922, 42), Action::EditSetting(setting));
     }
     self.button("retry", "Retry last response", rect(314, 526, 272, 46), Action::Retry, false);
     self.button("delete", "Delete this chat", rect(604, 526, 254, 46), Action::DeleteChat, false);
@@ -1050,6 +1102,73 @@ mod tests {
       notes: String::new(),
       downloaded: 0,
       total: 0,
+    }
+  }
+
+  #[test]
+  fn settings_provider_options_fit_and_keep_navigation_actions_visible() {
+    for provider in [Provider::DeepSeek, Provider::OpenAiCompatible] {
+      let (backend, mut canvas) = canvas();
+      let mut state = WodexCore::default().state().clone();
+      state.settings.provider = provider;
+      state.settings.model = provider.default_model().into();
+      let mut ui = ViewState { page: Page::Settings, ..ViewState::default() };
+      let buttons = render(
+        &mut canvas,
+        &state,
+        &mut ui,
+        &status(UpdatePhase::Idle),
+        &HomeMenuStatus::default(),
+        false,
+        "0.2.1",
+        false,
+        true,
+        None,
+      );
+      for action in [
+        Action::Provider(Provider::DeepSeek),
+        Action::Provider(Provider::OpenAiCompatible),
+        Action::Transfer,
+        Action::HomeMenu,
+        Action::Updates,
+        Action::EditSetting(Setting::ApiKey),
+        Action::EditSetting(Setting::Model),
+        Action::EditSetting(Setting::BaseUrl),
+        Action::EditSetting(Setting::SystemPrompt),
+        Action::EditSetting(Setting::MaxTokens),
+        Action::BackToChat,
+      ] {
+        assert!(buttons.iter().any(|button| button.action == action));
+      }
+      assert_eq!(
+        buttons.iter().any(|button| button.action == Action::EditSetting(Setting::Thinking)),
+        provider == Provider::DeepSeek
+      );
+      assert_eq!(
+        buttons.iter().any(|button| button.action == Action::EditSetting(Setting::TokenLimitField)),
+        provider == Provider::OpenAiCompatible
+      );
+      let settings_buttons: Vec<_> = buttons.iter().filter(|button| button.area.x >= 300).collect();
+      for (index, button) in settings_buttons.iter().enumerate() {
+        let area = button.area;
+        assert!(area.y >= 64 && area.y + area.h <= 574);
+        assert!(area.x + area.w <= 1236);
+        for other in &settings_buttons[index + 1..] {
+          let other = other.area;
+          assert!(
+            area.x + area.w <= other.x
+              || other.x + other.w <= area.x
+              || area.y + area.h <= other.y
+              || other.y + other.h <= area.y,
+            "Settings controls overlap: {}",
+            button.id
+          );
+        }
+      }
+      assert!(!backend.drawn_text.iter().any(|text| text.contains("DeepSeek API key")));
+      if provider == Provider::OpenAiCompatible {
+        assert!(backend.drawn_text.iter().any(|text| text == "Enter your provider's model name"));
+      }
     }
   }
 

@@ -516,7 +516,7 @@ fn html(catalog: &Catalog) -> String {
     <meta name=\"description\" content=\"Download Wodex for Nintendo Switch: timestamped nightly builds and explicit versions.\">\
     <title>Wodex · Downloads</title><link rel=\"stylesheet\" href=\"style.css\"></head><body>\
     <a class=\"skip\" href=\"#downloads\">Skip to downloads</a><header><p class=\"eyebrow\">WODEX / NINTENDO SWITCH</p>\
-    <h1>Your conversations.<br>Your console.</h1><p class=\"intro\">A native DeepSeek chat client for Nintendo Switch. \
+    <h1>Your conversations.<br>Your console.</h1><p class=\"intro\">A native chat client for DeepSeek and OpenAI-compatible providers on Nintendo Switch. \
     Pick a recent nightly or an explicit version below.</p><nav aria-label=\"Download channels\">\
     <a href=\"#nightly\">Nightly</a><a href=\"#version\">Versions</a></nav></header>\
     <main id=\"downloads\">{content}</main><footer>Copy <code>wodex.nro</code> to <code>sdmc:/switch/wodex/</code> and open it with the Homebrew Menu. \

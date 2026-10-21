@@ -145,6 +145,37 @@ void test_http_errors(const std::string& base_url) {
   }
 }
 
+void test_compatible_provider(const std::string& base_url) {
+  for (const auto* token_field : {"max_tokens", "max_completion_tokens"}) {
+    Core core;
+    wodex::Transport transport;
+    const auto settings = core.call({{"op", "settings"}, {"settings", {
+      {"provider", "openai_compatible"}, {"api_key", "generic-local-test-key"},
+      {"base_url", base_url + "/compatible/" + token_field}, {"model", "mock-model"},
+      {"token_limit_field", token_field}
+    }}});
+    check(settings.at("ok") == true, "Compatible provider settings were rejected.");
+    const auto response = core.call({{"op", "send"}, {"content", "Hello, Switch!"}});
+    check(response.at("ok") == true, "Compatible provider could not create a request.");
+    const auto& outgoing = response.at("request");
+    check(outgoing.at("body").at(token_field) == 4096, "The token limit field was not respected.");
+    for (const auto* field : {"thinking", "reasoning_effort", "stream_options"}) {
+      check(!outgoing.at("body").contains(field), "A DeepSeek option reached the compatible provider.");
+    }
+    start(transport, outgoing);
+    const auto result = drain(transport, &core, true);
+    check(result.status == 200 && result.error.empty(), "Compatible provider HTTP streaming failed.");
+    const auto state = core.state();
+    const auto& answer = state.at("conversations").at(0).at("messages").at(1);
+    check(answer.at("content") == "你好，Switch! 🌿" && answer.at("status") == "complete",
+      "Compatible provider streaming text was not retained.");
+    const auto saved = core.call({{"op", "export"}}).at("data").dump();
+    Core restored{saved.c_str()};
+    check(restored.state().at("settings").at("provider") == "openai_compatible",
+      "The provider did not survive save/reload.");
+  }
+}
+
 void test_truncated(const std::string& base_url) {
   Core core;
   wodex::Transport transport;
@@ -276,6 +307,7 @@ int main(int argc, char** argv) {
     if (argc != 2) throw std::runtime_error("Run this binary through tests/mock_deepseek.py.");
     const std::string base_url = argv[1];
     test_normal(base_url);
+    test_compatible_provider(base_url);
     test_http_errors(base_url);
     test_truncated(base_url);
     test_cancel(base_url);

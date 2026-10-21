@@ -46,16 +46,24 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
       length = int(self.headers.get("Content-Length", "0"))
       assert 0 < length < 4 * 1024 * 1024, "Invalid mock request size"
       body = json.loads(self.rfile.read(length))
-      assert self.headers.get("Authorization") == "Bearer mock-local-test-key", "Invalid mock authorization"
       assert body["model"] == "mock-model", "Incorrect model in request"
       assert body["stream"] is True, "Streaming not enabled"
-      assert body["stream_options"]["include_usage"] is True, "Usage not requested"
-      assert body["thinking"]["type"] == "enabled", "Thinking not enabled"
+      compatible = self.path.startswith("/compatible/")
+      if compatible:
+        assert self.headers.get("Authorization") == "Bearer generic-local-test-key", "Wrong provider credential"
+        token_field = self.path.split("/")[2]
+        assert token_field in ("max_tokens", "max_completion_tokens"), "Unexpected limit field"
+        assert body[token_field] == 4096, "Incorrect compatible token limit"
+        assert set(body) == {"model", "messages", "stream", token_field}, "Unsupported compatible fields"
+      else:
+        assert self.headers.get("Authorization") == "Bearer mock-local-test-key", "Invalid mock authorization"
+        assert body["stream_options"]["include_usage"] is True, "Usage not requested"
+        assert body["thinking"]["type"] == "enabled", "Thinking not enabled"
       assert body["messages"][-1]["content"] == "Hello, Switch!", "Incorrect chat message"
       with self.server.lock:
         self.server.requests[self.path] += 1
 
-      if self.path == "/normal/chat/completions":
+      if self.path == "/normal/chat/completions" or compatible:
         payload = b": mock keepalive\r\n\r\n" + b"".join([
           event({"choices": [{"delta": {"role": "assistant"}}]}),
           event({"choices": [{"delta": {"reasoning_content": "思考中…"}}]}),
@@ -129,6 +137,7 @@ def main():
   expected = {
     "/normal/chat/completions", "/unauthorized/chat/completions", "/redirect/chat/completions",
     "/truncated/chat/completions", "/cancel/chat/completions", "/oversized/chat/completions",
+    "/compatible/max_tokens/chat/completions", "/compatible/max_completion_tokens/chat/completions",
   }
   if result.returncode == 0 and (set(server.requests) != expected or any(count != 1 for count in server.requests.values())):
     print("Unexpected mock request count; redirects or rejected requests may have escaped validation.", file=sys.stderr)
