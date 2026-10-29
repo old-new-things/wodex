@@ -50,6 +50,12 @@ pub struct UrlParts {
   pub has_query: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ByteRange {
+  pub start: u64,
+  pub total: u64,
+}
+
 pub struct Request {
   pub url: String,
   pub post: bool,
@@ -63,9 +69,12 @@ pub struct Request {
   pub connect_timeout_seconds: u32,
   pub low_speed_bytes: u32,
   pub low_speed_seconds: u32,
-  /// None permits all successful 2xx statuses; updates require exactly 200.
+  /// None permits all successful 2xx statuses unless expected_range is set.
   pub body_status: Option<u16>,
   pub abort_rejected_body: bool,
+  /// A resume request accepts only an identity-encoded 206 for this exact tail.
+  /// Ignored ranges and HTTP errors are returned without exposing their body.
+  pub expected_range: Option<ByteRange>,
 }
 
 impl Default for Request {
@@ -85,6 +94,7 @@ impl Default for Request {
       low_speed_seconds: 90,
       body_status: None,
       abort_rejected_body: false,
+      expected_range: None,
     }
   }
 }
@@ -181,6 +191,9 @@ impl Http {
     if cancelled.load(Ordering::Acquire) {
       return Err(HttpError::Cancelled);
     }
+    if request.expected_range.is_some_and(|range| range.start >= range.total) {
+      return Err(HttpError::Failure("Cannot request an invalid byte range.".into()));
+    }
     let handle = unsafe { (self.api.create)() };
     if handle.is_null() {
       return Err(HttpError::Failure("Cannot create the HTTPS request.".into()));
@@ -247,6 +260,9 @@ impl Http {
       header_bytes: 0,
       body_status: request.body_status,
       abort_rejected_body: request.abort_rejected_body,
+      expected_range: request.expected_range,
+      range_headers: RangeHeaders::default(),
+      range_received: 0,
     };
     if !unsafe {
       (self.api.callbacks)(
@@ -271,6 +287,14 @@ impl Http {
     if let Some(error) = transfer.error {
       return Err(HttpError::Failure(error));
     }
+    if let Some(expected) = request.expected_range.filter(|_| status == 206) {
+      transfer.range_headers.validate(expected).map_err(HttpError::Failure)?;
+      if code == 0 && transfer.range_received != expected.total - expected.start {
+        return Err(HttpError::Failure(
+          "The server returned an incomplete byte-range response.".into(),
+        ));
+      }
+    }
     let response = Response { http_status: status, curl_code: code };
     Ok(response)
   }
@@ -285,7 +309,126 @@ struct Transfer<'a> {
   header_bytes: usize,
   body_status: Option<u16>,
   abort_rejected_body: bool,
+  expected_range: Option<ByteRange>,
+  range_headers: RangeHeaders,
+  range_received: u64,
 }
+
+#[derive(Default)]
+struct RangeHeaders {
+  content_range: Option<(u64, u64, u64)>,
+  content_length: Option<u64>,
+  encoding_seen: bool,
+  complete: bool,
+  body_started: bool,
+  invalid: bool,
+}
+
+impl RangeHeaders {
+  fn receive(&mut self, bytes: &[u8]) {
+    let Some(line) = bytes.strip_suffix(b"\r\n").or_else(|| bytes.strip_suffix(b"\n")) else {
+      self.invalid = true;
+      return;
+    };
+    if line.starts_with(b"HTTP/") {
+      if self.body_started {
+        self.invalid = true;
+      } else {
+        // libcurl sends interim and proxy responses through the same callback.
+        // Their fields cannot validate the final response's byte range.
+        *self = Self::default();
+      }
+      return;
+    }
+    if line.is_empty() {
+      self.complete = true;
+      return;
+    }
+    let Some(colon) = line.iter().position(|byte| *byte == b':') else {
+      self.invalid = true;
+      return;
+    };
+    let name = &line[..colon];
+    let value = trim_ows(&line[colon + 1..]);
+    let range = name.eq_ignore_ascii_case(b"content-range");
+    let length = name.eq_ignore_ascii_case(b"content-length");
+    let encoding = name.eq_ignore_ascii_case(b"content-encoding");
+    let content_type = name.eq_ignore_ascii_case(b"content-type");
+    if self.complete {
+      // Trailers must not supply or revise metadata needed before appending.
+      self.invalid |= range || length || encoding || content_type;
+      return;
+    }
+    if line[0] == b' ' || line[0] == b'\t' {
+      self.invalid = true;
+    } else if range {
+      let parsed = parse_content_range(value);
+      self.invalid |= self.content_range.is_some() || parsed.is_none();
+      self.content_range = parsed;
+    } else if length {
+      let parsed = parse_decimal(value);
+      self.invalid |= self.content_length.is_some() || parsed.is_none();
+      self.content_length = parsed;
+    } else if encoding {
+      self.invalid |= self.encoding_seen || !value.eq_ignore_ascii_case(b"identity");
+      self.encoding_seen = true;
+    } else if content_type {
+      // Range requests ask for one continuous tail, never MIME framing.
+      self.invalid |=
+        value.get(..10).is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"multipart/"));
+    }
+  }
+
+  fn validate(&self, expected: ByteRange) -> Result<(), String> {
+    if self.invalid
+      || !self.complete
+      || self.content_range != Some((expected.start, expected.total - 1, expected.total))
+      || self.content_length.is_some_and(|length| length != expected.total - expected.start)
+    {
+      Err("The server returned an invalid byte-range response.".into())
+    } else {
+      Ok(())
+    }
+  }
+}
+
+fn trim_ows(mut bytes: &[u8]) -> &[u8] {
+  while matches!(bytes.first(), Some(b' ' | b'\t')) {
+    bytes = &bytes[1..];
+  }
+  while matches!(bytes.last(), Some(b' ' | b'\t')) {
+    bytes = &bytes[..bytes.len() - 1];
+  }
+  bytes
+}
+
+fn parse_decimal(bytes: &[u8]) -> Option<u64> {
+  if bytes.is_empty() {
+    return None;
+  }
+  bytes.iter().try_fold(0u64, |value, byte| {
+    byte.is_ascii_digit().then_some(())?;
+    value.checked_mul(10)?.checked_add(u64::from(*byte - b'0'))
+  })
+}
+
+fn parse_content_range(bytes: &[u8]) -> Option<(u64, u64, u64)> {
+  let space = bytes.iter().position(|byte| *byte == b' ')?;
+  if !bytes[..space].eq_ignore_ascii_case(b"bytes") {
+    return None;
+  }
+  let bounds = &bytes[space + 1..];
+  let dash = bounds.iter().position(|byte| *byte == b'-')?;
+  let slash = bounds.iter().position(|byte| *byte == b'/')?;
+  if dash >= slash {
+    return None;
+  }
+  let start = parse_decimal(&bounds[..dash])?;
+  let end = parse_decimal(&bounds[dash + 1..slash])?;
+  let total = parse_decimal(&bounds[slash + 1..])?;
+  (start <= end && end < total).then_some((start, end, total))
+}
+
 unsafe extern "C" fn progress(context: *mut c_void) -> bool {
   let transfer = unsafe { &*(context.cast::<Transfer<'_>>()) };
   transfer.cancelled.load(Ordering::Acquire)
@@ -298,8 +441,21 @@ unsafe extern "C" fn receive_body(context: *mut c_void, data: *const u8, len: us
   let status = unsafe { (transfer.http.api.status)(transfer.handle) };
   if !(200..300).contains(&status)
     || transfer.body_status.is_some_and(|expected| status != expected)
+    || (transfer.expected_range.is_some() && status != 206)
   {
     return if transfer.abort_rejected_body { 0 } else { len };
+  }
+  if let Some(expected) = transfer.expected_range {
+    if let Err(error) = transfer.range_headers.validate(expected) {
+      transfer.error = Some(error);
+      return 0;
+    }
+    if len as u64 > expected.total - expected.start - transfer.range_received {
+      transfer.error = Some("The byte-range response exceeds its expected size.".into());
+      return 0;
+    }
+    transfer.range_headers.body_started = true;
+    transfer.range_received += len as u64;
   }
   let bytes = if len == 0 { &[] } else { unsafe { core::slice::from_raw_parts(data, len) } };
   match (transfer.sink)(bytes) {
@@ -310,7 +466,7 @@ unsafe extern "C" fn receive_body(context: *mut c_void, data: *const u8, len: us
     }
   }
 }
-unsafe extern "C" fn receive_header(context: *mut c_void, _data: *const u8, len: usize) -> usize {
+unsafe extern "C" fn receive_header(context: *mut c_void, data: *const u8, len: usize) -> usize {
   let transfer = unsafe { &mut *(context.cast::<Transfer<'_>>()) };
   if transfer.cancelled.load(Ordering::Acquire) {
     return 0;
@@ -320,13 +476,17 @@ unsafe extern "C" fn receive_header(context: *mut c_void, _data: *const u8, len:
     return 0;
   }
   transfer.header_bytes += len;
+  if transfer.expected_range.is_some() {
+    let bytes = if len == 0 { &[] } else { unsafe { core::slice::from_raw_parts(data, len) } };
+    transfer.range_headers.receive(bytes);
+  }
   len
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use alloc::{boxed::Box, collections::BTreeMap, vec};
+  use alloc::{boxed::Box, collections::BTreeMap, format, vec};
   use core::ffi::CStr;
 
   #[derive(Default)]
@@ -399,6 +559,9 @@ mod tests {
     if !secured {
       return 43;
     }
+    if let Some(scenario) = url.strip_prefix("range/") {
+      return unsafe { perform_range(handle, scenario, context, body, header) };
+    }
     let status = if url.ends_with("denied") {
       401
     } else if url.ends_with("redirect") {
@@ -436,6 +599,97 @@ mod tests {
       23
     }
   }
+  unsafe fn perform_range(
+    handle: *mut c_void,
+    scenario: &str,
+    context: *mut c_void,
+    body: Receive,
+    header: Receive,
+  ) -> u32 {
+    let status = match scenario {
+      "ignored" => 200,
+      "unsatisfied" => 416,
+      "redirect" => 302,
+      _ => 206,
+    };
+    unsafe { (*handle.cast::<Fake>()).status = status };
+    let mut lines = Vec::<Vec<u8>>::new();
+    if scenario == "interim" || scenario == "interim-only" {
+      lines.extend([
+        b"HTTP/1.1 100 Continue\r\n".to_vec(),
+        b"Content-Range: bytes 0-2/3\r\n".to_vec(),
+        b"Content-Length: 3\r\n".to_vec(),
+        b"Content-Encoding: gzip\r\n".to_vec(),
+        b"\r\n".to_vec(),
+        b"HTTP/1.1 200 Connection established\r\n".to_vec(),
+        b"Content-Range: irrelevant proxy metadata\r\n".to_vec(),
+        b"\r\n".to_vec(),
+      ]);
+    }
+    if scenario == "budget" {
+      for _ in 0..3 {
+        lines.push(b"HTTP/1.1 100 Continue\r\n".to_vec());
+        let mut field = b"X-Padding: ".to_vec();
+        field.extend_from_slice(&vec![b'a'; 22_000]);
+        field.extend_from_slice(b"\r\n");
+        lines.push(field);
+        lines.push(b"\r\n".to_vec());
+      }
+    }
+    lines.push(format!("HTTP/1.1 {status} Test\r\n").into_bytes());
+    if scenario != "missing" && scenario != "interim-only" && scenario != "empty-missing" {
+      let range = scenario.strip_prefix("invalid/").unwrap_or("bytes 5-19/20");
+      lines.push(format!("cOnTeNt-RaNgE:\t{range} \t\r\n").into_bytes());
+    }
+    if scenario != "chunked" {
+      let length = if scenario == "wrong-length" { "14" } else { "15" };
+      lines.push(format!("Content-Length: {length}\r\n").into_bytes());
+    }
+    match scenario {
+      "duplicate-range" => lines.push(b"Content-Range: bytes 5-19/20\r\n".to_vec()),
+      "duplicate-length" => lines.push(b"Content-Length: 15\r\n".to_vec()),
+      "duplicate-encoding" => lines.extend([
+        b"Content-Encoding: identity\r\n".to_vec(),
+        b"Content-Encoding: identity\r\n".to_vec(),
+      ]),
+      "encoding" => lines.push(b"Content-Encoding: gzip\r\n".to_vec()),
+      "multipart" => lines.push(b"Content-Type: multipart/byteranges; boundary=test\r\n".to_vec()),
+      "folded" => lines.push(b" Content-Encoding: identity\r\n".to_vec()),
+      "malformed-length" => lines.push(b"Content-Length: +15\r\n".to_vec()),
+      "correct" => lines.push(b"Content-Encoding: IDENTITY\r\n".to_vec()),
+      _ => {}
+    }
+    if scenario != "no-blank" {
+      lines.push(b"\r\n".to_vec());
+    }
+    for line in lines {
+      if unsafe { header(context, line.as_ptr(), line.len()) } != line.len() {
+        return 23;
+      }
+    }
+    if scenario == "empty-missing" || scenario == "empty" {
+      return 0;
+    }
+    let bytes = match scenario {
+      "oversized" => &b"secret response!"[..],
+      "truncated" => &b"secret"[..],
+      _ => &b"secret response"[..],
+    };
+    if unsafe { body(context, bytes.as_ptr(), bytes.len()) } != bytes.len() {
+      return 23;
+    }
+    if scenario == "trailer" {
+      let trailer = b"Content-Range: bytes 5-19/20\r\n";
+      if unsafe { header(context, trailer.as_ptr(), trailer.len()) } != trailer.len() {
+        return 23;
+      }
+    }
+    if scenario == "truncated" {
+      18
+    } else {
+      0
+    }
+  }
   unsafe extern "C" fn status(handle: *mut c_void) -> u16 {
     unsafe { (*handle.cast::<Fake>()).status }
   }
@@ -470,6 +724,120 @@ mod tests {
     let mut request = Request::default();
     request.url = path.into();
     request
+  }
+
+  fn range_request(scenario: &str) -> Request {
+    let mut request = request(&format!("range/{scenario}"));
+    request.expected_range = Some(ByteRange { start: 5, total: 20 });
+    request.abort_rejected_body = true;
+    request
+  }
+
+  #[test]
+  fn valid_resume_headers_allow_only_the_exact_tail() {
+    let cancelled = AtomicBool::new(false);
+    for scenario in ["correct", "chunked", "interim"] {
+      let mut bytes = Vec::new();
+      let response = http()
+        .perform(&range_request(scenario), &cancelled, &mut |chunk| {
+          bytes.extend_from_slice(chunk);
+          Ok(())
+        })
+        .unwrap();
+      assert_eq!(response.http_status, 206);
+      assert_eq!(response.curl_code, 0);
+      assert_eq!(bytes, b"secret response", "{scenario}");
+    }
+  }
+
+  #[test]
+  fn resume_rejects_invalid_headers_before_exposing_any_body() {
+    let cancelled = AtomicBool::new(false);
+    let mut scenarios = vec![
+      "missing",
+      "interim-only",
+      "no-blank",
+      "duplicate-range",
+      "duplicate-length",
+      "duplicate-encoding",
+      "encoding",
+      "multipart",
+      "folded",
+      "wrong-length",
+      "malformed-length",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect::<Vec<_>>();
+    for value in [
+      "bytes 4-19/20",
+      "bytes 5-18/20",
+      "bytes 5-19/21",
+      "bytes 5-19/*",
+      "bytes */20",
+      "bytes 5-19/0",
+      "bytes 5-19/18446744073709551616",
+      "bytes -5-19/20",
+      "bytes +5-19/20",
+      "bytes 5-19/20, 5-19/20",
+      "items 5-19/20",
+      "bytes  5-19/20",
+    ] {
+      scenarios.push(format!("invalid/{value}"));
+    }
+    for scenario in scenarios {
+      assert!(
+        matches!(
+          http()
+            .perform(&range_request(&scenario), &cancelled, &mut |_| panic!("range body exposed")),
+          Err(HttpError::Failure(_))
+        ),
+        "{scenario}"
+      );
+    }
+  }
+
+  #[test]
+  fn ignored_unsatisfied_and_redirected_ranges_return_status_without_body() {
+    let cancelled = AtomicBool::new(false);
+    for (scenario, status) in [("ignored", 200), ("unsatisfied", 416), ("redirect", 302)] {
+      let response = http()
+        .perform(&range_request(scenario), &cancelled, &mut |_| panic!("rejected body exposed"))
+        .unwrap();
+      assert_eq!(response.http_status, status);
+      assert_eq!(response.curl_code, 23);
+    }
+  }
+
+  #[test]
+  fn empty_ranges_trailers_and_body_bounds_cannot_bypass_validation() {
+    let cancelled = AtomicBool::new(false);
+    for scenario in ["empty-missing", "empty", "oversized", "trailer", "budget"] {
+      assert!(
+        matches!(
+          http().perform(&range_request(scenario), &cancelled, &mut |_| Ok(())),
+          Err(HttpError::Failure(_))
+        ),
+        "{scenario}"
+      );
+    }
+    // A transport failure may leave a valid prefix for the next resume attempt.
+    let mut bytes = Vec::new();
+    let response = http()
+      .perform(&range_request("truncated"), &cancelled, &mut |chunk| {
+        bytes.extend_from_slice(chunk);
+        Ok(())
+      })
+      .unwrap();
+    assert_eq!(response.http_status, 206);
+    assert_eq!(response.curl_code, 18);
+    assert_eq!(bytes, b"secret");
+    let mut invalid = range_request("correct");
+    invalid.expected_range = Some(ByteRange { start: 0, total: 0 });
+    assert!(matches!(
+      http().perform(&invalid, &cancelled, &mut |_| Ok(())),
+      Err(HttpError::Failure(_))
+    ));
   }
 
   #[test]

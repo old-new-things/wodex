@@ -98,6 +98,11 @@ void write(const std::string& path, const std::vector<std::uint8_t>& bytes) {
   if (!file) throw std::runtime_error("Cannot write the update fixture.");
 }
 
+std::vector<std::uint8_t> prefix(const std::vector<std::uint8_t>& bytes, std::size_t length) {
+  if (length > bytes.size()) throw std::runtime_error("Invalid partial fixture length.");
+  return {bytes.begin(), bytes.begin() + static_cast<std::ptrdiff_t>(length)};
+}
+
 std::vector<std::uint8_t> read(const std::string& path) {
   std::ifstream file{path, std::ios::binary};
   if (!file) throw std::runtime_error("Cannot read the update fixture.");
@@ -117,6 +122,18 @@ public:
 private:
   std::filesystem::path path_;
 };
+
+void check_single_partial(const TemporaryDirectory& directory) {
+  std::size_t partials = 0;
+  for (const auto& entry : std::filesystem::directory_iterator(
+      std::filesystem::path(directory.path()).parent_path())) {
+    const auto name = entry.path().filename().string();
+    check(name == "wodex.nro" || name == "wodex.nro.update.part",
+      "Resume created a second temporary file or metadata sidecar.");
+    if (name == "wodex.nro.update.part") ++partials;
+  }
+  check(partials <= 1, "More than one partial update was retained.");
+}
 
 wodex::UpdateStatus wait(Updater& updater) {
   const auto deadline = Clock::now() + std::chrono::seconds{10};
@@ -237,8 +254,126 @@ void test_cancel(const std::string& base) {
   check(Clock::now() - cancelled_at < std::chrono::milliseconds{100}, "Update cancellation blocked the UI thread.");
   check(wait(updater).phase == UpdatePhase::Cancelled && Clock::now() - cancelled_at < std::chrono::seconds{3},
     "The cancelled update did not stop promptly.");
-  check(read(directory.path()) == original && !std::filesystem::exists(directory.path() + ".update.part"),
-    "Cancellation changed the executable or retained a partial update.");
+  const auto partial = read(directory.path() + ".update.part");
+  check(read(directory.path()) == original && !partial.empty() && partial.size() < 1024 * 1024,
+    "Cancellation changed the executable or did not retain the partial update.");
+  check(partial == prefix(nro(2, 1024 * 1024), partial.size()),
+    "Cancellation retained bytes other than the downloaded artifact prefix.");
+  check_single_partial(directory);
+}
+
+void test_resume_after_disconnect(const std::string& base) {
+  for (const bool restart : {false, true}) {
+    TemporaryDirectory directory;
+    const auto original = nro(1);
+    const auto next = nro(2);
+    write(directory.path(), original);
+    const auto scenario = restart ? "resume-disconnect" : "resume-retry";
+    auto updater = std::make_unique<Updater>("0.2.0", directory.path(), base);
+    updater->check(std::string{"fixture/"} + scenario);
+    check(wait(*updater).phase == UpdatePhase::Available, "Resume fixture was not offered.");
+    updater->download();
+    check(wait(*updater).phase == UpdatePhase::Error && !updater->pending_install(),
+      "Interrupted transfer became installable.");
+    check(read(directory.path() + ".update.part") == prefix(next, 1024),
+      "Interrupted transfer did not retain its exact prefix.");
+    check(read(directory.path()) == original, "Interrupted transfer changed the installed executable.");
+    check_single_partial(directory);
+    if (restart) {
+      updater.reset();
+      check(read(directory.path() + ".update.part") == prefix(next, 1024),
+        "Closing the updater discarded a resumable download.");
+      updater = std::make_unique<Updater>("0.2.0", directory.path(), base);
+      updater->check(std::string{"fixture/"} + scenario);
+      check(wait(*updater).phase == UpdatePhase::Available, "Restart could not reselect the partial download.");
+    }
+    updater->download();
+    const auto ready = wait(*updater);
+    check(ready.phase == UpdatePhase::Ready && ready.downloaded == next.size() && ready.total == next.size(),
+      "The resumed download did not become verified and complete.");
+    check(updater->pending_install().has_value() && read(directory.path() + ".update.part") == next,
+      "The resumed file differs from the advertised artifact.");
+    check(read(directory.path()) == original, "Resuming replaced the installed executable before installation.");
+    check_single_partial(directory);
+  }
+}
+
+void test_existing_partial_and_resume_fallback(const std::string& base) {
+  const auto next = nro(2);
+  for (const std::string scenario : {"resume-valid", "resume-ignored", "resume-416", "resume-corrupt",
+    "resume-complete", "resume-complete-corrupt", "resume-oversized", "resume-empty"}) {
+    TemporaryDirectory directory;
+    const auto original = nro(1);
+    write(directory.path(), original);
+    auto partial = scenario == "resume-empty" ? std::vector<std::uint8_t>{}
+      : (scenario == "resume-complete" || scenario == "resume-complete-corrupt" || scenario == "resume-oversized")
+        ? next : prefix(next, 1024);
+    if (scenario == "resume-corrupt" || scenario == "resume-complete-corrupt") partial[0x90] ^= 0xff;
+    if (scenario == "resume-oversized") partial.push_back(0x55);
+    write(directory.path() + ".update.part", partial);
+    Updater updater{"0.2.0", directory.path(), base};
+    updater.check("fixture/" + scenario);
+    check(wait(updater).phase == UpdatePhase::Available, "Existing-partial scenario was not offered.");
+    check(read(directory.path() + ".update.part") == partial,
+      "Checking for updates discarded the retained partial file.");
+    updater.download();
+    const auto ready = wait(updater);
+    check(ready.phase == UpdatePhase::Ready && ready.downloaded == next.size(),
+      "Existing partial or bounded full-download fallback did not become ready.");
+    check(updater.pending_install().has_value() && read(directory.path() + ".update.part") == next,
+      "Existing partial produced an incorrect staged artifact.");
+    check(read(directory.path()) == original, "Resuming or restarting changed the installed executable.");
+    check_single_partial(directory);
+  }
+}
+
+void test_rejects_invalid_resume_headers(const std::string& base) {
+  for (const std::string scenario : {"resume-bad-start", "resume-missing-range", "resume-duplicate-range", "resume-encoded"}) {
+    TemporaryDirectory directory;
+    const auto original = nro(1);
+    const auto partial = prefix(nro(2), 1024);
+    write(directory.path(), original);
+    write(directory.path() + ".update.part", partial);
+    Updater updater{"0.2.0", directory.path(), base};
+    updater.check("fixture/" + scenario);
+    check(wait(updater).phase == UpdatePhase::Available, "Invalid-range scenario was not offered.");
+    updater.download();
+    const auto failed = wait(updater);
+    check(failed.phase == UpdatePhase::Error && !updater.pending_install(),
+      "Invalid resume response became installable.");
+    check(read(directory.path() + ".update.part") == partial,
+      "Invalid resume headers allowed response bytes to append to the partial file.");
+    check(read(directory.path()) == original, "Invalid resume response changed the installed executable.");
+    check(failed.message.find("private-update-body") == std::string::npos,
+      "An invalid resume response leaked server body text.");
+    check_single_partial(directory);
+  }
+}
+
+void test_partial_path_safety(const std::string& base) {
+  for (const bool symlink : {false, true}) {
+    TemporaryDirectory directory;
+    const auto original = nro(1);
+    write(directory.path(), original);
+    const auto staged = directory.path() + ".update.part";
+    const auto unrelated = directory.path("unrelated.bin");
+    if (symlink) {
+      write(unrelated, nro(7));
+      std::filesystem::create_symlink(unrelated, staged);
+    } else {
+      std::filesystem::create_directory(staged);
+    }
+    Updater updater{"0.2.0", directory.path(), base};
+    updater.check("fixture/resume-valid");
+    check(wait(updater).phase == UpdatePhase::Available, "Partial-path fixture was not offered.");
+    updater.download();
+    check(wait(updater).phase == UpdatePhase::Error && !updater.pending_install(),
+      "A nonregular partial file was accepted for resume.");
+    check(read(directory.path()) == original, "A partial-path failure changed the installed executable.");
+    check(symlink ? std::filesystem::is_symlink(staged) : std::filesystem::is_directory(staged),
+      "A nonregular partial path was deleted or replaced.");
+    if (symlink) check(read(unrelated) == nro(7), "Resuming followed a symlink and changed another file.");
+  }
 }
 
 void test_paths_and_ready_reset(const std::string& base) {
@@ -258,7 +393,7 @@ void test_paths_and_ready_reset(const std::string& base) {
   check(wait(updater).phase == UpdatePhase::Ready, "The reset fixture did not become ready.");
   updater.check("fixture/good");
   check(wait(updater).phase == UpdatePhase::Available && !updater.pending_install() &&
-    !std::filesystem::exists(directory.path() + ".update.part"), "A new check retained a stale pending install.");
+    read(directory.path() + ".update.part") == nro(2), "A new check retained a pending install or discarded its reusable file.");
 }
 
 int injected_rename(const char* from, const char* to) {
@@ -353,8 +488,8 @@ void test_nightly_channel(const std::string& base) {
   check(read(directory.path()) == original, "Checking or downloading nightly replaced the running executable.");
   updater.check("fixture/nightly-good", UpdateChannel::Version);
   check(wait(updater).phase == UpdatePhase::Current && !updater.pending_install() &&
-    !std::filesystem::exists(directory.path() + ".update.part"),
-    "Switching channels retained an obsolete staged nightly.");
+    read(directory.path() + ".update.part") == nro(2),
+    "Switching channels retained a pending install or discarded the single retained download.");
   updater.check("fixture/nightly-good", UpdateChannel::Nightly);
   check(wait(updater).phase == UpdatePhase::Available, "A repeat nightly check failed after changing channels.");
   Updater newer{"0.4.0", "", base};
@@ -395,6 +530,10 @@ int main(int argc, char** argv) {
     test_nightly_channel(argv[1]);
     test_failures(argv[1]);
     test_cancel(argv[1]);
+    test_resume_after_disconnect(argv[1]);
+    test_existing_partial_and_resume_fallback(argv[1]);
+    test_rejects_invalid_resume_headers(argv[1]);
+    test_partial_path_safety(argv[1]);
     test_paths_and_ready_reset(argv[1]);
     test_install_safety();
     if (argc == 3) test_real_artifact(argv[2]);

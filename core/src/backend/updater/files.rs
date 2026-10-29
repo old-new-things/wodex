@@ -8,7 +8,7 @@ use crate::{
   update::{self, WodexSha256},
 };
 
-use super::PendingUpdate;
+use super::{PendingUpdate, WorkError};
 
 pub(super) fn backup_path(target: &str) -> String {
   format!("{}.previous.nro", &target[..target.len() - 4])
@@ -231,27 +231,45 @@ pub(super) fn candidate(target: &str, sha256: &str, size: u64) -> Result<Pending
 }
 
 pub(super) fn verify_stage(fs: &Fs, pending: &PendingUpdate) -> Result<(), String> {
+  verify_stage_checked(fs, pending, || Ok(())).map_err(|error| match error {
+    WorkError::Cancelled => String::from("Update verification cancelled."),
+    WorkError::Failure(error) | WorkError::Invalid(error) => error,
+  })
+}
+
+pub(super) fn verify_stage_checked(
+  fs: &Fs,
+  pending: &PendingUpdate,
+  mut checkpoint: impl FnMut() -> Result<(), WorkError>,
+) -> Result<(), WorkError> {
+  checkpoint()?;
   let mut file = fs.open_read(&pending.staged_path)?;
   let size = file.size()?;
   if size != pending.size {
-    return Err("The downloaded update size changed. Download it again.".into());
+    return Err(WorkError::Invalid(
+      "The downloaded update size changed. Download it again.".into(),
+    ));
   }
   let mut hash = WodexSha256::new();
-  let mut buffer = [0u8; 65_536];
+  let mut buffer = [0u8; 16 * 1024];
   loop {
+    checkpoint()?;
     let count =
       file.read(&mut buffer).map_err(|_| String::from("Cannot verify the downloaded update."))?;
     if count == 0 {
       break;
     }
     if !hash.update(&buffer[..count]) {
-      return Err("Cannot verify the update checksum.".into());
+      return Err(WorkError::Invalid("Cannot verify the update checksum.".into()));
     }
   }
+  checkpoint()?;
   if hash.finish() != pending.sha256 {
-    return Err("The update checksum does not match the published version.".into());
+    return Err(WorkError::Invalid(
+      "The update checksum does not match the published version.".into(),
+    ));
   }
-  validate_nro(&mut file, size, true)
+  validate_nro(&mut file, size, true).map_err(WorkError::Invalid)
 }
 
 pub fn install_update(fs: &Fs, pending: &PendingUpdate) -> Result<(), String> {

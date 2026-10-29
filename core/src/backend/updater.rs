@@ -1,6 +1,7 @@
 //! GitHub Pages update orchestration, bounded download verification and installation.
 //! This module is shared by desktop and the no_std Switch build. Native code
 //! supplies only individual HTTP, filesystem, thread and mutex operations.
+mod download;
 mod files;
 
 use alloc::{format, string::String, sync::Arc, vec};
@@ -10,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
   app::host::{UpdatePhase, UpdateStatus},
   build_identity::BuildIdentity,
-  update::{self, UpdateChannel, WodexSha256},
+  update::{self, UpdateChannel},
 };
 
 use super::{
@@ -106,6 +107,8 @@ impl Updater {
     state.status.phase = phase;
     state.status.message = message.into();
     state.status.downloaded = 0;
+    state.status.can_download = false;
+    state.pending = None;
     self.shared.working.store(true, Ordering::Release);
     Ok(())
   }
@@ -114,9 +117,7 @@ impl Updater {
     self.prepare(UpdatePhase::Checking, "Checking the selected GitHub Pages update channel…")?;
     {
       let mut state = self.shared.state.lock();
-      if let Some(pending) = state.pending.take() {
-        let _ = self.shared.fs.remove(&pending.staged_path, true);
-      }
+      state.pending = None;
       state.build = None;
       state.status.version.clear();
       state.status.notes.clear();
@@ -137,7 +138,11 @@ impl Updater {
       if self.active() {
         return Err("An update operation is already running.".into());
       }
-      if state.status.phase != UpdatePhase::Available || state.build.is_none() {
+      if !matches!(
+        state.status.phase,
+        UpdatePhase::Available | UpdatePhase::Cancelled | UpdatePhase::Error
+      ) || state.build.is_none()
+      {
         state.status.phase = UpdatePhase::Error;
         state.status.message = "Check for an available update before downloading.".into();
         return Ok(());
@@ -186,6 +191,8 @@ impl Worker {
     let mut state = self.state.lock();
     state.status.phase = phase;
     state.status.message = message.into();
+    state.status.can_download = state.build.is_some()
+      && matches!(phase, UpdatePhase::Available | UpdatePhase::Cancelled | UpdatePhase::Error);
     self.working.store(false, Ordering::Release);
   }
 
@@ -211,7 +218,9 @@ impl Worker {
       }
       Ok(None) => self.finish(UpdatePhase::Current, "No newer build is available in this channel."),
       Err(WorkError::Cancelled) => self.finish(UpdatePhase::Cancelled, "Update check cancelled."),
-      Err(WorkError::Failure(error)) => self.finish(UpdatePhase::Error, &error),
+      Err(WorkError::Failure(error) | WorkError::Invalid(error)) => {
+        self.finish(UpdatePhase::Error, &error)
+      }
     }
   }
 
@@ -256,8 +265,7 @@ impl Worker {
   }
 
   fn transfer(&self, selected: &PublishedUpdate) {
-    let mut created = None;
-    let result = self.download_build(selected, &mut created);
+    let result = self.download_build(selected);
     match result {
       Ok(pending) => {
         self.state.lock().pending = Some(pending);
@@ -267,62 +275,57 @@ impl Worker {
         );
       }
       Err(error) => {
-        if let Some(staged) = created {
-          let _ = self.fs.remove(&staged, true);
+        let invalid = matches!(&error, WorkError::Invalid(_));
+        let (phase, mut message) = match error {
+          WorkError::Cancelled => {
+            (UpdatePhase::Cancelled, String::from("Update download cancelled."))
+          }
+          WorkError::Failure(error) | WorkError::Invalid(error) => (UpdatePhase::Error, error),
+        };
+        let mut retained = 0;
+        if let Ok(candidate) = files::candidate(&self.target_path, &selected.sha256, selected.size)
+        {
+          if let Ok(Some(info)) = self.fs.stat(&candidate.staged_path, false) {
+            if info.is_regular() {
+              if invalid || info.size == 0 {
+                if self.fs.remove(&candidate.staged_path, true).is_err() {
+                  message.push_str(" Cannot remove the incomplete update file.");
+                }
+              } else if info.size <= selected.size {
+                retained = info.size;
+              }
+            }
+          }
         }
-        match error {
-          WorkError::Cancelled => self.finish(UpdatePhase::Cancelled, "Update download cancelled."),
-          WorkError::Failure(error) => self.finish(UpdatePhase::Error, &error),
+        self.state.lock().status.downloaded = retained;
+        if retained != 0 {
+          message.push_str(" Partial download kept; choose Resume download to retry.");
         }
+        self.finish(phase, &message);
       }
     }
   }
 
-  fn download_build(
-    &self,
-    selected: &PublishedUpdate,
-    created: &mut Option<String>,
-  ) -> Result<PendingUpdate, WorkError> {
-    let candidate = files::candidate(&self.target_path, &selected.sha256, selected.size)?;
-    if !self.fs.stat(&self.target_path, false)?.is_some_and(|info| info.is_regular()) {
-      return Err(failure("The running NRO file is missing or is not a regular file."));
-    }
-    if let Some(stale) = self.fs.stat(&candidate.staged_path, false)? {
-      if !stale.is_regular() || self.fs.remove(&candidate.staged_path, false).is_err() {
-        return Err(failure("Cannot remove an incomplete update file."));
-      }
-    }
-    let mut file = self
-      .fs
-      .create_new(&candidate.staged_path)
-      .map_err(|_| failure("Cannot create the update file beside the running NRO."))?;
-    *created = Some(candidate.staged_path.clone());
-    let mut hash = WodexSha256::new();
-    let mut received = 0u64;
-    self.fetch(&selected.download_url, candidate.size, &mut |bytes| {
-      file
-        .write_all(bytes)
-        .map_err(|_| String::from("Cannot write the update file. Check free space."))?;
-      if !hash.update(bytes) {
-        return Err("Cannot verify the update checksum.".into());
-      }
-      received += bytes.len() as u64;
-      self.state.lock().status.downloaded = received;
-      Ok(())
-    })?;
-    if received != candidate.size {
-      return Err(failure("The downloaded update size does not match the published build."));
-    }
-    if hash.finish() != candidate.sha256 {
-      return Err(failure("The update checksum does not match the published build."));
-    }
+  fn request(&self, canonical: &str, status: u16) -> Result<Request, WorkError> {
     self.check_cancelled()?;
-    file.sync().map_err(|_| failure("Cannot flush the update file to storage."))?;
-    file.close().map_err(|_| failure("Cannot close the update file."))?;
-    files::verify_stage(&self.fs, &candidate)?;
-    self.fs.sync_parent(&candidate.staged_path)?;
-    self.check_cancelled()?;
-    Ok(candidate)
+    let parsed = pages_url(&self.http, canonical)?;
+    let actual = if self.test_api_base.is_empty() {
+      String::from(canonical)
+    } else {
+      format!("{}/{}{}", self.test_api_base, parsed.host, parsed.path)
+    };
+    Ok(Request {
+      url: actual,
+      headers: vec!["Accept: application/json, application/octet-stream".into()],
+      body: vec![],
+      ca_bundle: self.ca_bundle.clone(),
+      user_agent: "Wodex-Updater/1".into(),
+      protocols: if self.test_api_base.is_empty() { "https" } else { "http" }.into(),
+      no_proxy: !self.test_api_base.is_empty(),
+      body_status: Some(status),
+      abort_rejected_body: true,
+      ..Request::default()
+    })
   }
 
   fn fetch(
@@ -331,28 +334,10 @@ impl Worker {
     limit: u64,
     sink: &mut dyn FnMut(&[u8]) -> Result<(), String>,
   ) -> Result<(), WorkError> {
-    self.check_cancelled()?;
     // Both URLs are constructed or checked against an exact project Pages path.
     // Reject redirects entirely: Pages serves these files directly, and a
     // redirect must not be able to transfer trust to another host or project.
-    let parsed = pages_url(&self.http, canonical)?;
-    let actual = if self.test_api_base.is_empty() {
-      String::from(canonical)
-    } else {
-      format!("{}/{}{}", self.test_api_base, parsed.host, parsed.path)
-    };
-    let request = Request {
-      url: actual,
-      headers: vec!["Accept: application/json, application/octet-stream".into()],
-      body: vec![],
-      ca_bundle: self.ca_bundle.clone(),
-      user_agent: "Wodex-Updater/1".into(),
-      protocols: if self.test_api_base.is_empty() { "https" } else { "http" }.into(),
-      no_proxy: !self.test_api_base.is_empty(),
-      body_status: Some(200),
-      abort_rejected_body: true,
-      ..Request::default()
-    };
+    let request = self.request(canonical, 200)?;
     let mut received = 0u64;
     let response = self.http.perform(&request, &self.cancelled, &mut |bytes| {
       if bytes.len() as u64 > limit - received {
@@ -392,6 +377,7 @@ impl Worker {
 enum WorkError {
   Cancelled,
   Failure(String),
+  Invalid(String),
 }
 
 impl From<String> for WorkError {

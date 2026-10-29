@@ -14,7 +14,9 @@ enum WodexFsOpenMode {
   WODEX_FS_READ = 0,
   WODEX_FS_CREATE_NEW = 1,
   WODEX_FS_DIRECTORY = 2,
-  WODEX_FS_READ_FOLLOW = 3
+  WODEX_FS_READ_FOLLOW = 3,
+  // Existing file only; no create, truncate, append or symlink following.
+  WODEX_FS_READ_WRITE = 4
 };
 
 enum WodexFsKind {

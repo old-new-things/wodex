@@ -320,7 +320,8 @@ pub unsafe extern "C" fn wodex_updater_status(value: *const Updater) -> *mut c_c
   let Some(value) = value.as_ref() else { return core::ptr::null_mut() };
   let status = value.status();
   owned(&serde_json::json!({"phase":status.phase as u32,"message":status.message,"version":status.version,
-    "notes":status.notes,"downloaded":status.downloaded,"total":status.total}).to_string())
+    "notes":status.notes,"downloaded":status.downloaded,"total":status.total,
+    "can_download":status.can_download}).to_string())
 }
 #[no_mangle]
 pub unsafe extern "C" fn wodex_updater_pending(value: *const Updater) -> *mut c_char {

@@ -133,7 +133,7 @@ Nightlies are ordered by their UTC build timestamps, independently of version nu
 
 If you installed the early nightly labeled 0.3.0, [install a current nightly manually once](docs/updates.md#install-an-update) to receive the new comparison rules. Existing 0.2.0 installations can update to 0.2.1 through Versions, then select Nightly.
 
-Wodex downloads the selected build's `wodex.nro` to a sibling temporary file and verifies the feed's advertised size, SHA-256, executable headers and embedded assets. Installing saves conversations, closes the interface and embedded resources, preserves a launchable `.previous.nro`, and replaces the actual NRO path supplied by the loader. Reopen Wodex from hbmenu or its installed HOME Menu tile afterward. A normal exit never installs a downloaded update.
+Wodex downloads the selected build's `wodex.nro` into one fixed sibling `.update.part` file. Interrupted or cancelled downloads can resume, including after restarting Wodex; choose **Resume download**, or check the channel and choose **Download** after a restart. The completed file must match the feed's advertised size and SHA-256 and pass executable/resource validation. Installing saves conversations, closes the interface and embedded resources, preserves a launchable `.previous.nro`, and replaces the actual NRO path supplied by the loader. Reopen Wodex from hbmenu or its installed HOME Menu tile afterward. A normal exit never installs a downloaded update.
 
 The SD-card replacement uses two renames, so power interruption can require restoring the `.previous.nro` backup manually. [Update and recovery instructions](docs/updates.md) explain that boundary, both build channels, and publication recovery.
 

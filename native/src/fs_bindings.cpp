@@ -36,10 +36,19 @@ int32_t fs_open(const char *path, uint32_t mode) {
   case WODEX_FS_READ_FOLLOW:
     flags = O_RDONLY;
     break;
+  case WODEX_FS_READ_WRITE:
+    flags = O_RDWR;
+#ifdef O_NOFOLLOW
+    flags |= O_NOFOLLOW;
+#endif
+    break;
   default:
     errno = EINVAL;
     return -1;
   }
+#ifdef O_CLOEXEC
+  flags |= O_CLOEXEC;
+#endif
   return ::open(path, flags, 0600);
 }
 

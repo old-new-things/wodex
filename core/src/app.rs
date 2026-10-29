@@ -281,6 +281,8 @@ impl<H: Host> App<H> {
   fn update_focus(&self) -> &'static str {
     if self.core.state().settings.update_repository.is_empty() {
       "update-official"
+    } else if self.update_source_checked() && self.host.update_status().can_download {
+      "update-download"
     } else {
       "update-check"
     }
@@ -864,7 +866,12 @@ impl<H: Host> App<H> {
           && self.host.update_supported()
           && self.update_source_checked()
           && !self.host.update_active()
-          && self.host.update_status().phase == UpdatePhase::Available =>
+          && {
+            let status = self.host.update_status();
+            status.phase == UpdatePhase::Available
+              || (status.can_download
+                && matches!(status.phase, UpdatePhase::Cancelled | UpdatePhase::Error))
+          } =>
       {
         let result = self.host.update_download();
         if self.update_result(result) {

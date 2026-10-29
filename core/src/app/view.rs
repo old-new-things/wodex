@@ -687,7 +687,9 @@ impl View<'_> {
     self.canvas.clip(rect(338, 396, 870, 52));
     self.canvas.text(&preview(message, 600), 340, 396, 18, MUTED, 864);
     self.canvas.unclip();
-    if matches!(status.phase, UpdatePhase::Downloading | UpdatePhase::Ready) {
+    if matches!(status.phase, UpdatePhase::Downloading | UpdatePhase::Ready)
+      || (status.can_download && status.downloaded != 0)
+    {
       self.canvas.rect(rect(340, 460, 864, 7), BORDER, 3);
       let progress = if status.total == 0 {
         0
@@ -725,6 +727,13 @@ impl View<'_> {
           "update-download",
           "Download",
           rect(572, 528, 224, 50),
+          Action::UpdateDownload,
+          true,
+        ),
+        UpdatePhase::Cancelled | UpdatePhase::Error if status.can_download => self.button(
+          "update-download",
+          if status.downloaded == 0 { "Retry download" } else { "Resume download" },
+          rect(572, 528, 264, 50),
           Action::UpdateDownload,
           true,
         ),
@@ -1102,6 +1111,7 @@ mod tests {
       notes: String::new(),
       downloaded: 0,
       total: 0,
+      can_download: false,
     }
   }
 

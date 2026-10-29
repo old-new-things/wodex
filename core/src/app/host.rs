@@ -115,6 +115,7 @@ pub struct UpdateStatus {
   pub notes: String,
   pub downloaded: u64,
   pub total: u64,
+  pub can_download: bool,
 }
 
 pub trait Host {

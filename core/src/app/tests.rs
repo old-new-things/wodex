@@ -429,6 +429,40 @@ fn failed_request_start_preserves_draft_and_does_not_leave_streaming_state() {
 }
 
 #[test]
+fn resume_action_keeps_checked_source_and_requires_a_selected_download() {
+  let mut app = app();
+  app.host.update_supported = true;
+  app.ui.page = Page::Updates;
+  app.dispatch(Action::UpdateCheck);
+  let (backend, mut canvas) = canvas::test_backend::canvas();
+  for phase in [UpdatePhase::Cancelled, UpdatePhase::Error] {
+    app.host.update.phase = phase;
+    app.host.update.can_download = true;
+    app.host.update.downloaded = 1024;
+    app.host.update.total = 4096;
+    app.render(&mut canvas).unwrap();
+    assert!(app.buttons.iter().any(|button| button.action == Action::UpdateDownload));
+    assert!(backend.drawn_text.iter().any(|text| text == "Resume download"));
+    assert_eq!(app.update_focus(), "update-download");
+    app.dispatch(Action::UpdateDownload);
+  }
+  assert_eq!(app.host.downloads, 2);
+  app.host.update.phase = UpdatePhase::Error;
+  app.host.update.can_download = false;
+  app.render(&mut canvas).unwrap();
+  assert!(!app.buttons.iter().any(|button| button.action == Action::UpdateDownload));
+  app.dispatch(Action::UpdateDownload);
+  assert_eq!(app.host.downloads, 2);
+  app.host.update.can_download = true;
+  set_repository(&mut app, "another/wodex");
+  app.render(&mut canvas).unwrap();
+  assert!(!app.buttons.iter().any(|button| button.action == Action::UpdateDownload));
+  app.dispatch(Action::UpdateDownload);
+  assert_eq!(app.host.downloads, 2, "a retained partial cannot bypass a fresh source check");
+  drop(canvas);
+}
+
+#[test]
 fn changing_version_source_invalidates_previous_download_and_install_actions() {
   let mut app = app();
   app.host.update_supported = true;

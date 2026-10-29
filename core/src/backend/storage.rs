@@ -229,7 +229,7 @@ impl Fs {
     Ok(File { fs: *self, descriptor })
   }
 
-  pub fn open_read(&self, path: &str) -> Result<File, String> {
+  fn open_regular(&self, path: &str, mode: u32) -> Result<File, String> {
     // This also rejects symlinks on native libraries lacking O_NOFOLLOW. The
     // descriptor check below rejects directories/devices and concurrent changes.
     if let Some(info) = self.stat(path, false)? {
@@ -237,11 +237,21 @@ impl Fs {
         return Err("The file is not a regular file.".into());
       }
     }
-    let file = self.open(path, 0).map_err(|error| error.context("Cannot open file"))?;
+    let file = self.open(path, mode).map_err(|error| error.context("Cannot open file"))?;
     if !file.info()?.is_regular() {
       return Err("The file is not a regular file.".into());
     }
     Ok(file)
+  }
+
+  pub fn open_read(&self, path: &str) -> Result<File, String> {
+    self.open_regular(path, 0)
+  }
+
+  /// Open an existing regular file without creating, truncating or appending.
+  /// Both reads and writes begin at offset zero; callers seek before resuming.
+  pub fn open_read_write(&self, path: &str) -> Result<File, String> {
+    self.open_regular(path, 4)
   }
 
   pub fn create_new(&self, path: &str) -> Result<File, String> {
@@ -584,6 +594,7 @@ mod tests {
     fail_replace: bool,
     fail_rollback: bool,
     fail_permissions: bool,
+    fstat_kind: Option<u32>,
     environment: BTreeMap<String, CString>,
   }
 
@@ -614,10 +625,20 @@ mod tests {
     IO.with(|state| {
       let mut io = state.borrow_mut();
       let mut options = OpenOptions::new();
-      if mode == 1 {
-        options.write(true).create_new(true);
-      } else {
-        options.read(true);
+      match mode {
+        0 | 2 | 3 => {
+          options.read(true);
+        }
+        1 => {
+          options.write(true).create_new(true);
+        }
+        4 => {
+          options.read(true).write(true);
+        }
+        _ => {
+          io.error = 4;
+          return -1;
+        }
       }
       let Some(file) = outcome(&mut io, options.open(text(path))) else { return -1 };
       io.next_fd += 1;
@@ -701,6 +722,9 @@ mod tests {
       let result = io.files.get(&fd).unwrap().metadata();
       let Some(value) = outcome(&mut io, result) else { return -1 };
       *output = metadata(value);
+      if let Some(kind) = io.fstat_kind {
+        (*output).kind = kind;
+      }
       0
     })
   }
@@ -913,9 +937,44 @@ mod tests {
       fs::write(&target, b"must not follow").unwrap();
       std::os::unix::fs::symlink(&target, fixture.path()).unwrap();
       assert!(fixture.fs.open_read(&fixture.path()).is_err());
+      assert!(fixture.fs.open_read_write(&fixture.path()).is_err());
       assert!(fixture.fs.create_new(&fixture.path()).is_err());
       assert_eq!(fs::read(&target).unwrap(), b"must not follow");
     }
+  }
+
+  #[test]
+  fn read_write_open_preserves_bytes_and_supports_explicit_resume_offsets() {
+    for switch in [false, true] {
+      let fixture = Fixture::new(switch);
+      fs::write(fixture.path(), b"abcdefgh").unwrap();
+      let mut file = fixture.fs.open_read_write(&fixture.path()).unwrap();
+      assert_eq!(file.size().unwrap(), 8);
+      let mut prefix = [0; 3];
+      assert_eq!(file.read(&mut prefix).unwrap(), 3);
+      assert_eq!(&prefix, b"abc");
+      file.seek(8).unwrap();
+      file.write_all(b"ij").unwrap();
+      // A write after seeking to zero must replace bytes, not append them.
+      file.seek(0).unwrap();
+      file.write_all(b"A").unwrap();
+      file.sync().unwrap();
+      file.close().unwrap();
+      assert_eq!(fs::read(fixture.path()).unwrap(), b"Abcdefghij");
+    }
+  }
+
+  #[test]
+  fn read_write_open_requires_an_existing_regular_file_and_closes_rejected_handles() {
+    let fixture = Fixture::new(false);
+    assert!(fixture.fs.open_read_write(&fixture.path()).is_err());
+    assert!(!fixture.directory.join("state.json").exists());
+    assert!(fixture.fs.open_read_write(fixture.directory.to_str().unwrap()).is_err());
+    fs::write(fixture.path(), b"keep existing content").unwrap();
+    IO.with(|state| state.borrow_mut().fstat_kind = Some(2));
+    assert!(fixture.fs.open_read_write(&fixture.path()).is_err());
+    IO.with(|state| assert!(state.borrow().files.is_empty()));
+    assert_eq!(fs::read(fixture.path()).unwrap(), b"keep existing content");
   }
 
   #[test]

@@ -5,6 +5,7 @@ import hashlib
 import http.server
 import json
 import os
+import re
 import struct
 import subprocess
 import sys
@@ -58,6 +59,7 @@ class Server(http.server.ThreadingHTTPServer):
     self.lock = threading.Lock()
     self.direct_downloads = 0
     self.nightly_downloads = 0
+    self.resume_requests = {}
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -66,16 +68,61 @@ class Handler(http.server.BaseHTTPRequestHandler):
   def log_message(self, *_args):
     pass
 
-  def reply(self, status, payload=b"", content_type="application/json", location=None):
+  def reply(self, status, payload=b"", content_type="application/json", location=None, headers=()):
     self.send_response(status)
     self.send_header("Content-Type", content_type)
     self.send_header("Content-Length", str(len(payload)))
     self.send_header("Connection", "close")
     if location:
       self.send_header("Location", location)
+    for name, value in headers:
+      self.send_header(name, value)
     self.end_headers()
     self.wfile.write(payload)
     self.close_connection = True
+
+  def resume_asset(self, scenario):
+    payload = asset(scenario)
+    value = self.headers.get("Range")
+    start = None
+    if value is not None:
+      match = re.fullmatch(r"bytes=([0-9]+)-", value)
+      assert match, "Resume used an invalid Range header"
+      start = int(match[1])
+      assert 0 < start < len(payload), "Resume offset is outside the selected artifact"
+      assert self.headers.get("Accept-Encoding") == "identity", "Resume did not request exact representation bytes"
+    with self.server.lock:
+      requests = self.server.resume_requests.setdefault(scenario, [])
+      requests.append(start)
+      attempt = len(requests)
+    if scenario in ("resume-disconnect", "resume-retry") and attempt == 1:
+      assert start is None, "Disconnect fixture did not start with a complete request"
+      self.send_response(200)
+      self.send_header("Content-Type", "application/octet-stream")
+      self.send_header("Content-Length", str(len(payload)))
+      self.send_header("Connection", "close")
+      self.end_headers()
+      self.wfile.write(payload[:1024])
+      self.wfile.flush()
+      self.close_connection = True
+      return
+    if start is None or scenario == "resume-ignored":
+      self.reply(200, payload, "application/octet-stream")
+      return
+    if scenario == "resume-416":
+      self.reply(416, b"private-update-body", headers=(("Content-Range", f"bytes */{len(payload)}"),))
+      return
+    content_range = f"bytes {start}-{len(payload) - 1}/{len(payload)}"
+    headers = [("Content-Range", content_range)]
+    if scenario == "resume-bad-start":
+      headers = [("Content-Range", f"bytes {start + 1}-{len(payload) - 1}/{len(payload)}")]
+    elif scenario == "resume-missing-range":
+      headers = []
+    elif scenario == "resume-duplicate-range":
+      headers.append(("Content-Range", content_range))
+    elif scenario == "resume-encoded":
+      headers.append(("Content-Encoding", "gzip"))
+    self.reply(206, payload[start:], "application/octet-stream", headers=headers)
 
   def do_GET(self):
     try:
@@ -149,6 +196,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.reply(200, asset(parts[1]), "application/octet-stream")
       elif len(parts) == 6 and parts[0] == "fixture.github.io" and parts[2:] == ["builds", "version", "0.3.0", "wodex.nro"]:
         scenario = parts[1]
+        if scenario.startswith("resume-"):
+          self.resume_asset(scenario)
+          return
         redirects = {
           "bad-redirect": "https://untrusted.example/private-update-body",
           "http-redirect": "http://fixture.github.io/good/builds/version/0.3.0/wodex.nro",
@@ -213,6 +263,27 @@ def main():
   if result.returncode == 0 and server.nightly_downloads != 1:
     print("The nightly artifact was not downloaded from its exact project Pages path.", file=sys.stderr)
     return 1
+  expected_resumes = {
+    "resume-valid": [1024],
+    "resume-disconnect": [None, 1024],
+    "resume-retry": [None, 1024],
+    "resume-ignored": [1024, None],
+    "resume-416": [1024, None],
+    "resume-corrupt": [1024, None],
+    "resume-complete": [],
+    "resume-complete-corrupt": [None],
+    "resume-oversized": [None],
+    "resume-empty": [None],
+    "resume-bad-start": [1024],
+    "resume-missing-range": [1024],
+    "resume-duplicate-range": [1024],
+    "resume-encoded": [1024],
+  }
+  if result.returncode == 0:
+    for scenario, offsets in expected_resumes.items():
+      if server.resume_requests.get(scenario, []) != offsets:
+        print(f"Unexpected download/resume requests for {scenario}: {server.resume_requests.get(scenario, [])}, expected {offsets}", file=sys.stderr)
+        return 1
   return result.returncode
 
 
