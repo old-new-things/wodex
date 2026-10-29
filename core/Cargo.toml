@@ -17,8 +17,8 @@ pulldown-cmark = { git = "https://github.com/pulldown-cmark/pulldown-cmark", rev
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
 sha2 = { version = "0.10.9", default-features = false, features = ["force-soft"] }
-tokn-endpoint-chat-completions = { git = "https://github.com/tokn-ai/tokn", rev = "67010af688a3eabd42dc287c5497d369d0cb2db6", default-features = false }
-tokn-endpoint-core = { git = "https://github.com/tokn-ai/tokn", rev = "67010af688a3eabd42dc287c5497d369d0cb2db6", default-features = false }
+tokn-endpoint-chat-completions = { git = "https://github.com/tokn-ai/tokn", rev = "d546ef2d306e9a952a17eae8a58366483832da05", default-features = false }
+tokn-endpoint-core = { git = "https://github.com/tokn-ai/tokn", rev = "d546ef2d306e9a952a17eae8a58366483832da05", default-features = false }
 unicode-width = { version = "0.2.2", default-features = false }
 zune-core = { version = "0.5.3", default-features = false }
 zune-jpeg = { version = "0.5.15", default-features = false }

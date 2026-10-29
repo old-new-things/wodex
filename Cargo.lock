@@ -243,7 +243,7 @@ dependencies = [
 [[package]]
 name = "tokn-endpoint-chat-completions"
 version = "0.2.4"
-source = "git+https://github.com/tokn-ai/tokn?rev=67010af688a3eabd42dc287c5497d369d0cb2db6#67010af688a3eabd42dc287c5497d369d0cb2db6"
+source = "git+https://github.com/tokn-ai/tokn?rev=d546ef2d306e9a952a17eae8a58366483832da05#d546ef2d306e9a952a17eae8a58366483832da05"
 dependencies = [
  "serde",
  "serde_json",
@@ -254,7 +254,7 @@ dependencies = [
 [[package]]
 name = "tokn-endpoint-core"
 version = "0.2.4"
-source = "git+https://github.com/tokn-ai/tokn?rev=67010af688a3eabd42dc287c5497d369d0cb2db6#67010af688a3eabd42dc287c5497d369d0cb2db6"
+source = "git+https://github.com/tokn-ai/tokn?rev=d546ef2d306e9a952a17eae8a58366483832da05#d546ef2d306e9a952a17eae8a58366483832da05"
 dependencies = [
  "serde",
  "serde_json",
@@ -264,7 +264,7 @@ dependencies = [
 [[package]]
 name = "tokn-endpoint-macros"
 version = "0.2.4"
-source = "git+https://github.com/tokn-ai/tokn?rev=67010af688a3eabd42dc287c5497d369d0cb2db6#67010af688a3eabd42dc287c5497d369d0cb2db6"
+source = "git+https://github.com/tokn-ai/tokn?rev=d546ef2d306e9a952a17eae8a58366483832da05#d546ef2d306e9a952a17eae8a58366483832da05"
 dependencies = [
  "proc-macro2",
  "quote",

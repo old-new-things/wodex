@@ -1,6 +1,6 @@
 # Verified build
 
-Verification updated on 2026-10-21.
+Verification updated on 2026-10-29.
 
 | Check | Result |
 | --- | --- |
@@ -40,7 +40,7 @@ Verification updated on 2026-10-21.
 
 Local NRO: `build/switch/wodex.nro`, version 0.2.1, 27,145,050 bytes (about 25.9 MiB). The embedded NACP version is verified. This local build uses the development identity; CI embeds the actual publication identity.
 
-SHA-256: `07ef3c154e556b36015c35db30a293c7c66b17e8ede1c828f3a9453ac50cb9b7`. Published CI binaries embed their actual workflow identity and have their own download checksums.
+SHA-256: `f9f4d164d0c2b82042f87dc97eadf671fd26f4586788765c6e7eca285fd88912`. Published CI binaries embed their actual workflow identity and have their own download checksums.
 
 Native tests call the production Rust transport and storage through test-only C++ facades. They cover actual curl transfer, every-byte fragmented UTF-8 SSE, reasoning/content/usage, retry context, authentication errors without response-body leakage, redirect refusal, truncation, cancellation, queue limits, private desktop writes, unique recovery backups, and persistence roundtrips. The application test drives the production Rust application through SDL compose, editor cancellation, send, retry, update navigation and exit/reload, including an environment-only API key. Adapter tests verify normalized SDL/libnx input and clipboard values. Font tests exercise the Rust filename selection and renderer for Simplified/Traditional Chinese, Latin, kana, Hangul, punctuation and representative rare CJK characters, wrapping and clipping at four UI point sizes, font overrides and resource selection.
 
@@ -55,6 +55,8 @@ Update tests additionally cover redirect rejection, exact Pages project/channel 
 HOME Menu tests validate the pinned template, dependent hashes, content metadata and title ID. Failure injection exercises each pre-registration operation, partial placeholder creation/registration, uncertain metadata writes, uncertain HOME Menu registration, collisions and failed cleanup. Referenced or pre-existing content is retained when ownership or registration cannot be established. UI tests cover failed saves, demo mode, busy operations, stale actions, exit blocking and readable recovery messages. The 177,172-byte template's SHA-256 is `683bfe7ececc3ee317cd64b3c951c43df85353f050dcb9884fee2d719a635c92`; source and generator checksums are recorded in its manifest. Its return path requests normal application exit without waiting for foreground focus, including after older NROs return. The actual Switch service calls are compile-checked; host mocks cannot prove their behavior on a console.
 
 PC transfer tests exercise real HTTP connections against the application, including inaccessible unauthenticated exports, Host/Origin checks, channel isolation, Unicode imports, saved-key inclusion and environment-key exclusion. Fault injection covers malformed framing, partial writes, expiry, rejected uploads with unread request bodies, import save failures before and after commit, and unknown storage outcomes that lock further writes. The generated browser script is executed in a Node VM with the actual HTML control structure and mocked DOM, HTTP responses and timers. Its 26 tests cover automatic configuration loading, masked-key clearing, complete form payloads, advanced settings, Unicode byte limits, device confirmation/rejection, dirty-draft reload, competing imports, failed loads and stale responses. Native screenshots cover transfer setup, active pairing, import confirmation, and both provider Settings layouts; browser visual interaction was not exercised.
+
+Tokn was refreshed to [`d546ef2d`](https://github.com/tokn-ai/tokn/tree/d546ef2d306e9a952a17eae8a58366483832da05) on 2026-10-29. The breaking SDK refactor replaces `DirectClient` with the shared `Client` pipeline; Wodex imports only the endpoint/core schema crates, whose sources, manifests and inherited dependencies are unchanged from its previous pin. The update therefore requires no application migration. Formatting, Clippy, all 197 application and 12 publisher tests, all twelve desktop suites, and the Switch `no_std` build passed with the new pin.
 
 Tokn integration uses pinned `no_std` endpoint/core crates for typed Chat Completions requests and streamed chunks. Tests cover DeepSeek options, generic requests without vendor-specific fields, both token-limit parameter names, legacy configuration defaults, incomplete generic setup, provider credential reset, per-provider environment keys, and imports that preserve saved/runtime credential separation. The generic loopback mock rejects unsupported request fields and verifies its distinct Bearer key. The final target dependency graph contains no `std`, Tokio or Reqwest dependency. Both provider settings screens were rendered through the native SDL harness and visually checked at 1280×720.
 
