@@ -1,7 +1,7 @@
 use crate::provider::{self, Provider, TokenLimitField};
 use crate::stream::{Event, Stream};
 use crate::update::UpdateChannel;
-use alloc::{format, string::String, vec, vec::Vec};
+use alloc::{collections::BTreeMap, format, string::String, vec, vec::Vec};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -34,6 +34,12 @@ pub struct Settings {
   pub thinking: bool,
   pub max_tokens: u32,
   pub system_prompt: String,
+  #[serde(default, skip_serializing_if = "is_false")]
+  pub allow_insecure_http: bool,
+  /// Inactive profiles only. The active profile stays in the legacy flat fields
+  /// so existing saves and configuration documents retain their meaning.
+  #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+  pub provider_profiles: BTreeMap<Provider, ProviderProfile>,
   #[serde(default)]
   pub update_repository: String,
   #[serde(default)]
@@ -51,9 +57,80 @@ impl Default for Settings {
       thinking: false,
       max_tokens: 4096,
       system_prompt: "You are a helpful assistant. Give clear, accurate answers.".into(),
+      allow_insecure_http: false,
+      provider_profiles: BTreeMap::new(),
       update_repository: OFFICIAL_UPDATE_REPOSITORY.into(),
       update_channel: UpdateChannel::Version,
     }
+  }
+}
+
+fn is_false(value: &bool) -> bool {
+  !value
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderProfile {
+  pub api_key: String,
+  pub base_url: String,
+  pub model: String,
+  pub thinking: bool,
+  #[serde(default, skip_serializing_if = "TokenLimitField::is_max_tokens")]
+  pub token_limit_field: TokenLimitField,
+  pub max_tokens: u32,
+  pub system_prompt: String,
+  #[serde(default, skip_serializing_if = "is_false")]
+  pub allow_insecure_http: bool,
+}
+
+impl ProviderProfile {
+  pub(crate) fn for_provider(provider: Provider) -> Self {
+    Self {
+      api_key: String::new(),
+      base_url: provider.default_base_url().into(),
+      model: provider.default_model().into(),
+      thinking: false,
+      token_limit_field: provider.default_token_limit_field(),
+      max_tokens: 4096,
+      system_prompt: "You are a helpful assistant. Give clear, accurate answers.".into(),
+      allow_insecure_http: false,
+    }
+  }
+}
+
+impl Settings {
+  pub(crate) fn active_profile(&self) -> ProviderProfile {
+    ProviderProfile {
+      api_key: self.api_key.clone(),
+      base_url: self.base_url.clone(),
+      model: self.model.clone(),
+      thinking: self.thinking,
+      token_limit_field: self.token_limit_field,
+      max_tokens: self.max_tokens,
+      system_prompt: self.system_prompt.clone(),
+      allow_insecure_http: self.allow_insecure_http,
+    }
+  }
+
+  fn switch_provider(&mut self, provider: Provider) {
+    if provider == self.provider {
+      return;
+    }
+    self.provider_profiles.insert(self.provider, self.active_profile());
+    let profile = self
+      .provider_profiles
+      .remove(&provider)
+      .unwrap_or_else(|| ProviderProfile::for_provider(provider));
+    self.provider = provider;
+    self.api_key = profile.api_key;
+    self.base_url = profile.base_url;
+    self.model = profile.model;
+    self.thinking = profile.thinking;
+    self.token_limit_field = profile.token_limit_field;
+    self.max_tokens = profile.max_tokens;
+    self.system_prompt = profile.system_prompt;
+    self.allow_insecure_http = profile.allow_insecure_http;
   }
 }
 
@@ -68,6 +145,8 @@ pub(crate) struct SettingsPatch {
   pub thinking: Option<bool>,
   pub max_tokens: Option<u32>,
   pub system_prompt: Option<String>,
+  pub allow_insecure_http: Option<bool>,
+  pub provider_profiles: Option<BTreeMap<Provider, ProviderProfile>>,
   pub update_repository: Option<String>,
   pub update_channel: Option<UpdateChannel>,
 }
@@ -151,6 +230,7 @@ pub struct WodexCore {
   stream: Option<Stream>,
   load_error: Option<String>,
   encoded_text_bytes: usize,
+  settings_metadata_bytes: usize,
 }
 
 impl Default for WodexCore {
@@ -171,6 +251,7 @@ impl Default for WodexCore {
       stream: None,
       load_error: None,
       encoded_text_bytes: 0,
+      settings_metadata_bytes: 128 * 1024,
     }
   }
 }
@@ -257,16 +338,8 @@ impl WodexCore {
     match command {
       Command::Settings { settings: patch } => {
         let mut settings = self.state.settings.clone();
-        if let Some(provider) = patch.provider.filter(|provider| *provider != settings.provider) {
-          // Switching protocols must not silently send the previous provider's
-          // credential to a new service. A complete imported/edited document
-          // may explicitly supply its own credential and endpoint afterwards.
-          settings.provider = provider;
-          settings.api_key.clear();
-          settings.base_url = provider.default_base_url().into();
-          settings.model = provider.default_model().into();
-          settings.thinking = false;
-          settings.token_limit_field = TokenLimitField::MaxTokens;
+        if let Some(provider) = patch.provider {
+          settings.switch_provider(provider);
         }
         macro_rules! apply {
           ($($field:ident),+ $(,)?) => {$({
@@ -283,12 +356,30 @@ impl WodexCore {
           thinking,
           max_tokens,
           system_prompt,
+          allow_insecure_http,
+          provider_profiles,
           update_repository,
           update_channel
         );
         settings.base_url = settings.base_url.trim_end_matches('/').into();
+        for profile in settings.provider_profiles.values_mut() {
+          profile.base_url = profile.base_url.trim_end_matches('/').into();
+        }
         validate_settings(&settings)?;
+        let metadata_bytes = settings_metadata_bytes(&settings)?;
+        if self.encoded_text_bytes
+          + metadata_bytes
+          + self.message_count() * 512
+          + self.state.conversations.len() * 1024
+          > MAX_SAVED_BYTES
+        {
+          return Err(
+            "Configuration and conversation storage is full. Delete an older conversation first."
+              .into(),
+          );
+        }
         self.state.settings = settings;
+        self.settings_metadata_bytes = metadata_bytes;
       }
       Command::NewChat {} => {
         if self.state.conversations.len() >= MAX_CONVERSATIONS {
@@ -381,6 +472,7 @@ impl WodexCore {
     if conversation.messages.len() + 2 > MAX_MESSAGES {
       return Err("This conversation is full. Start a new conversation.".into());
     }
+    let previous_title = conversation.title.clone();
     if conversation.messages.is_empty() {
       conversation.title = make_title(content);
     }
@@ -392,8 +484,16 @@ impl WodexCore {
       finish_reason: None,
       usage: None,
     });
+    let prepared = match provider::prepare_request(&self.state.settings, &conversation.messages) {
+      Ok(prepared) => prepared,
+      Err(error) => {
+        conversation.messages.pop();
+        conversation.title = previous_title;
+        return Err(error);
+      }
+    };
     self.encoded_text_bytes = encoded_text_bytes;
-    Ok(self.start_request())
+    Ok(self.start_request(prepared))
   }
 
   fn retry(&mut self) -> Result<Value, String> {
@@ -414,6 +514,12 @@ impl WodexCore {
     ) {
       return Err("Conversation storage is full. Delete an older conversation first.".into());
     }
+    let history_length =
+      self.state.conversations[index].messages.len() - usize::from(last.role == Role::Assistant);
+    let prepared = provider::prepare_request(
+      &self.state.settings,
+      &self.state.conversations[index].messages[..history_length],
+    )?;
     let conversation = &mut self.state.conversations[index];
     if conversation.messages.last().is_some_and(|message| message.role == Role::Assistant) {
       conversation.messages.pop();
@@ -425,12 +531,14 @@ impl WodexCore {
       return Err("This conversation is full. Start a new conversation.".into());
     }
     self.encoded_text_bytes -= removed_bytes;
-    Ok(self.start_request())
+    Ok(self.start_request(prepared))
   }
 
   fn check_ready(&self) -> Result<(), String> {
     validate_settings(&self.state.settings)?;
-    if self.state.settings.api_key.trim().is_empty() {
+    if self.state.settings.api_key.trim().is_empty()
+      && self.state.settings.provider.requires_api_key()
+    {
       return Err(format!(
         "Add your {} API key in Settings first.",
         self.state.settings.provider.label()
@@ -442,14 +550,15 @@ impl WodexCore {
     Ok(())
   }
 
-  fn start_request(&mut self) -> Value {
+  fn start_request(&mut self, prepared: provider::PreparedChatRequest) -> Value {
     let index = self.active_index();
-    let body =
-      provider::chat_request(&self.state.settings, &self.state.conversations[index].messages);
     let request = json!({
-      "url": format!("{}/chat/completions", self.state.settings.base_url),
+      "url": prepared.url,
       "api_key": self.state.settings.api_key,
-      "body": body
+      "body": prepared.body,
+      "headers": prepared.headers,
+      "protocol": prepared.protocol,
+      "allow_insecure_http": self.state.settings.allow_insecure_http
     });
     self.state.conversations[index].messages.push(Message {
       role: Role::Assistant,
@@ -461,7 +570,7 @@ impl WodexCore {
     });
     self.state.is_streaming = true;
     self.state.error = None;
-    self.stream = Some(Stream::default());
+    self.stream = Some(Stream::new(prepared.protocol));
     json!({"ok": true, "request": request})
   }
 
@@ -521,7 +630,7 @@ impl WodexCore {
       return Ok(self.fail_stream(&error));
     }
     let stream = self.stream.as_ref().expect("active stream");
-    if !stream.done && stream.finish_reason.is_none() {
+    if !stream.is_complete() {
       return Ok(
         self.fail_stream("The connection ended before the response finished. You can retry."),
       );
@@ -534,7 +643,7 @@ impl WodexCore {
     }
     let warning = match finish_reason.as_deref() {
       Some("length") => {
-        Some("The response reached the token limit. Increase max_tokens in Settings.")
+        Some("The response reached the token limit. Increase the response token limit in Settings.")
       }
       Some("content_filter") => {
         Some("The API stopped this response because of its content filter.")
@@ -598,7 +707,9 @@ impl WodexCore {
   // expand control bytes sixfold, so a plain UTF-8 byte limit alone cannot
   // guarantee that every accepted response can still be persisted.
   fn storage_metadata_bytes(&self, messages: usize, added_chats: usize) -> usize {
-    128 * 1024 + messages * 512 + (self.state.conversations.len() + added_chats) * 1024
+    self.settings_metadata_bytes
+      + messages * 512
+      + (self.state.conversations.len() + added_chats) * 1024
   }
 
   fn storage_fits(&self, encoded_text: usize, messages: usize, added_chats: usize) -> bool {
@@ -635,7 +746,11 @@ impl WodexCore {
       return Err("Unsupported storage version.".into());
     }
     saved.settings.base_url = saved.settings.base_url.trim_end_matches('/').into();
+    for profile in saved.settings.provider_profiles.values_mut() {
+      profile.base_url = profile.base_url.trim_end_matches('/').into();
+    }
     validate_settings(&saved.settings)?;
+    let settings_metadata_bytes = settings_metadata_bytes(&saved.settings)?;
     if saved.conversations.is_empty() || saved.conversations.len() > MAX_CONVERSATIONS {
       return Err("Invalid conversation count.".into());
     }
@@ -723,6 +838,7 @@ impl WodexCore {
       stream: None,
       load_error: None,
       encoded_text_bytes,
+      settings_metadata_bytes,
     })
   }
 }
@@ -775,14 +891,6 @@ fn make_title(content: &str) -> String {
 }
 
 fn validate_settings(settings: &Settings) -> Result<(), String> {
-  if settings.provider == Provider::OpenAiCompatible && settings.thinking {
-    return Err("Thinking controls are available only for DeepSeek.".into());
-  }
-  if settings.provider == Provider::DeepSeek
-    && settings.token_limit_field != TokenLimitField::MaxTokens
-  {
-    return Err("DeepSeek uses the max_tokens response limit.".into());
-  }
   if !settings.update_repository.is_empty()
     && !crate::update::valid_repository(&settings.update_repository)
   {
@@ -790,89 +898,57 @@ fn validate_settings(settings: &Settings) -> Result<(), String> {
       "Enter a public GitHub repository as owner/repo, or leave the update source empty.".into(),
     );
   }
-  if settings.api_key.len() > 4096
-    || settings.api_key.chars().any(|c| c.is_whitespace() || c.is_control())
-  {
+  if settings.provider_profiles.contains_key(&settings.provider) {
     return Err(
-      "The API key must contain no spaces or control characters and be at most 4096 bytes.".into(),
+      "The active provider must use the main configuration fields, not an inactive profile.".into(),
     );
   }
-  if (settings.model.is_empty() && settings.provider == Provider::DeepSeek)
+  validate_profile(settings.provider, &settings.active_profile())?;
+  for (&provider, profile) in &settings.provider_profiles {
+    validate_profile(provider, profile)?;
+  }
+  Ok(())
+}
+
+fn settings_metadata_bytes(settings: &Settings) -> Result<usize, String> {
+  let size =
+    serde_json::to_vec(settings).map_err(|_| "Could not serialize provider settings.")?.len();
+  Ok((size + 1024).max(128 * 1024))
+}
+
+fn validate_profile(provider: Provider, settings: &ProviderProfile) -> Result<(), String> {
+  if provider != Provider::DeepSeek && settings.thinking {
+    return Err("Thinking controls are available only for DeepSeek.".into());
+  }
+  if provider == Provider::DeepSeek && settings.token_limit_field != TokenLimitField::MaxTokens {
+    return Err("DeepSeek uses the max_tokens response limit.".into());
+  }
+  if settings.api_key.len() > 4096
+    || settings.api_key.bytes().any(|byte| !(0x21..=0x7e).contains(&byte))
+  {
+    return Err(
+      "The API key must contain only printable ASCII without spaces and be at most 4096 bytes."
+        .into(),
+    );
+  }
+  if (settings.model.is_empty() && provider == Provider::DeepSeek)
     || settings.model.len() > 128
     || !settings.model.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"-_.:/".contains(&byte))
   {
     return Err("Enter a valid model name of at most 128 ASCII characters.".into());
   }
   if !(1..=131_072).contains(&settings.max_tokens) {
-    return Err("max_tokens must be between 1 and 131072.".into());
+    return Err("The response token limit must be between 1 and 131072.".into());
   }
   if settings.system_prompt.len() > 16 * 1024 || settings.system_prompt.contains('\0') {
     return Err(
       "The system prompt must be at most 16 KiB and cannot contain NUL characters.".into(),
     );
   }
-  validate_base_url(&settings.base_url)
-}
-
-fn validate_base_url(url: &str) -> Result<(), String> {
-  let fail = || {
-    String::from("Use an HTTPS base URL without credentials, query, or fragment. HTTP is allowed only on localhost.")
-  };
-  if url.len() > 2048
-    || !url.is_ascii()
-    || url.bytes().any(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control())
-    || url.bytes().any(|byte| b"?#@\\\"<>".contains(&byte))
-  {
-    return Err(fail());
+  if settings.allow_insecure_http && provider != Provider::LlamaCpp {
+    return Err("Local HTTP is available only for llama.cpp.".into());
   }
-  let (secure, remainder) = if let Some(rest) = url.strip_prefix("https://") {
-    (true, rest)
-  } else if let Some(rest) = url.strip_prefix("http://") {
-    (false, rest)
-  } else {
-    return Err(fail());
-  };
-  let authority = remainder.split('/').next().unwrap_or_default();
-  if authority.is_empty() || remainder.contains('%') {
-    return Err(fail());
-  }
-  let (host, port) = if authority.starts_with('[') {
-    let close = authority.find(']').ok_or_else(fail)?;
-    let host = &authority[..=close];
-    let tail = &authority[close + 1..];
-    if host != "[::1]" || (!tail.is_empty() && !tail.starts_with(':')) {
-      return Err(fail());
-    }
-    (host, tail.strip_prefix(':'))
-  } else {
-    let (host, port) =
-      authority.split_once(':').map_or((authority, None), |(host, port)| (host, Some(port)));
-    if host.is_empty()
-      || !host.bytes().all(|byte| byte.is_ascii_alphanumeric() || b".-".contains(&byte))
-      || host.starts_with('.')
-      || host.ends_with('.')
-      || host.contains("..")
-    {
-      return Err(fail());
-    }
-    (host, port)
-  };
-  if let Some(port) = port {
-    if port.is_empty()
-      || !port.bytes().all(|byte| byte.is_ascii_digit())
-      || port.parse::<u16>().ok().filter(|&port| port > 0).is_none()
-    {
-      return Err(fail());
-    }
-  }
-  if !secure && !matches!(host, "localhost" | "127.0.0.1" | "[::1]") {
-    return Err(fail());
-  }
-  if remainder.contains("//") || remainder.split('/').skip(1).any(|part| matches!(part, "." | ".."))
-  {
-    return Err(fail());
-  }
-  Ok(())
+  crate::api_url::validate(&settings.base_url, settings.allow_insecure_http)
 }
 
 #[cfg(test)]

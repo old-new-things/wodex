@@ -12,11 +12,18 @@ upstream commit listed below: released `pulldown-cmark` 0.13.4 still requires
 Its `std`, HTML-renderer, command-line and SIMD features are disabled.
 Replace the pin with a published no_std-compatible release when available.
 
-Chat Completions requests and streamed chunks use Tokn's endpoint crates,
-pinned to [`d546ef2d306e9a952a17eae8a58366483832da05`](https://github.com/tokn-ai/tokn/tree/d546ef2d306e9a952a17eae8a58366483832da05).
+Provider request preparation and authentication use Tokn's portable
+`tokn-provider-deepseek`, `tokn-provider-openai`, `tokn-provider-opencode`,
+`tokn-provider-llama-cpp`, and `tokn-provider-zai` drivers, together with
+`tokn-core` and `tokn-headers`. `tokn-convert` and the Chat Completions,
+Responses, Messages, and shared endpoint crates supply wire types and protocol
+conversion. These crates are pinned to
+[`d546ef2d306e9a952a17eae8a58366483832da05`](https://github.com/tokn-ai/tokn/tree/d546ef2d306e9a952a17eae8a58366483832da05).
 Their default features are disabled, keeping the target graph `no_std + alloc`.
-The endpoint procedural macro runs on the host. The Tokn license below is
-copied without alteration from that commit's repository-level `LICENSE`.
+Wodex supplies its own native HTTP worker; the Tokn gateway, account router,
+and standard SDK runtime are not linked. The endpoint procedural macro runs
+on the host. The Tokn license below is copied without alteration from that
+commit's repository-level `LICENSE`.
 
 PNG/JPEG previews use `zune-png`, `zune-jpeg` and `zune-core` with default
 features disabled. Their portable Rust decoding and the PNG inflater remain
@@ -33,16 +40,22 @@ platforms but is not selected by this Switch dependency graph.
 | Package and source | Use | License text |
 | --- | --- | --- |
 | [allocator-api2 0.2.21](https://crates.io/crates/allocator-api2/0.2.21) | Target dependency | [LICENSE-MIT](allocator-api2-0.2.21/LICENSE-MIT) |
+| [base64 0.22.1](https://crates.io/crates/base64/0.22.1) | Target dependency | [LICENSE-MIT](base64-0.22.1/LICENSE-MIT) |
 | [bitflags 2.13.2](https://crates.io/crates/bitflags/2.13.2) | Target dependency | [LICENSE-MIT](bitflags-2.13.2/LICENSE-MIT) |
 | [block-buffer 0.10.4](https://crates.io/crates/block-buffer/0.10.4) | Target dependency | [LICENSE-MIT](block-buffer-0.10.4/LICENSE-MIT) |
+| [block-buffer 0.12.1](https://crates.io/crates/block-buffer/0.12.1) | Target dependency | [LICENSE-MIT](block-buffer-0.12.1/LICENSE-MIT) |
 | [cfg-if 1.0.5](https://crates.io/crates/cfg-if/1.0.5) | Target dependency | [LICENSE-MIT](cfg-if-1.0.5/LICENSE-MIT) |
 | [cpufeatures 0.2.17](https://crates.io/crates/cpufeatures/0.2.17) | Target dependency | [LICENSE-MIT](cpufeatures-0.2.17/LICENSE-MIT) |
+| [cpufeatures 0.3.1](https://crates.io/crates/cpufeatures/0.3.1) | Target dependency | [LICENSE-MIT](cpufeatures-0.3.1/LICENSE-MIT) |
 | [crypto-common 0.1.7](https://crates.io/crates/crypto-common/0.1.7) | Target dependency | [LICENSE-MIT](crypto-common-0.1.7/LICENSE-MIT) |
+| [crypto-common 0.2.2](https://crates.io/crates/crypto-common/0.2.2) | Target dependency | [LICENSE-MIT](crypto-common-0.2.2/LICENSE-MIT) |
 | [digest 0.10.7](https://crates.io/crates/digest/0.10.7) | Target dependency | [LICENSE-MIT](digest-0.10.7/LICENSE-MIT) |
+| [digest 0.11.3](https://crates.io/crates/digest/0.11.3) | Target dependency | [LICENSE-MIT](digest-0.11.3/LICENSE-MIT) |
 | [equivalent 1.0.3](https://crates.io/crates/equivalent/1.0.3) | Target dependency | [LICENSE-MIT](equivalent-1.0.3/LICENSE-MIT) |
 | [foldhash 0.1.5](https://crates.io/crates/foldhash/0.1.5) | Target dependency | [Zlib license](foldhash-0.1.5/LICENSE) |
 | [generic-array 0.14.7](https://crates.io/crates/generic-array/0.14.7) | Target dependency | [LICENSE](generic-array-0.14.7/LICENSE) |
 | [hashbrown 0.15.5](https://crates.io/crates/hashbrown/0.15.5) | Target dependency | [LICENSE-MIT](hashbrown-0.15.5/LICENSE-MIT) |
+| [hybrid-array 0.4.15](https://crates.io/crates/hybrid-array/0.4.15) | Target dependency | [LICENSE-MIT](hybrid-array-0.4.15/LICENSE-MIT) |
 | [itoa 1.0.18](https://crates.io/crates/itoa/1.0.18) | Target dependency | [LICENSE-MIT](itoa-1.0.18/LICENSE-MIT) |
 | [libc 0.2.190](https://crates.io/crates/libc/0.2.190) | Platform-conditional; not selected by the Switch target | [LICENSE-MIT](libc-0.2.190/LICENSE-MIT) |
 | [memchr 2.8.3](https://crates.io/crates/memchr/2.8.3) | Target dependency | [LICENSE-MIT](memchr-2.8.3/LICENSE-MIT) |
@@ -54,13 +67,17 @@ platforms but is not selected by this Switch dependency graph.
 | [serde_derive 1.0.229](https://crates.io/crates/serde_derive/1.0.229) | Build dependency; not linked into the NRO | [LICENSE-MIT](serde_derive-1.0.229/LICENSE-MIT) |
 | [serde_json 1.0.154](https://crates.io/crates/serde_json/1.0.154) | Target dependency | [LICENSE-MIT](serde_json-1.0.154/LICENSE-MIT) |
 | [sha2 0.10.9](https://crates.io/crates/sha2/0.10.9) | Target dependency | [LICENSE-MIT](sha2-0.10.9/LICENSE-MIT) |
+| [sha2 0.11.1](https://crates.io/crates/sha2/0.11.1) | Target dependency | [LICENSE-MIT](sha2-0.11.1/LICENSE-MIT) |
 | [simd-adler32 0.3.10](https://crates.io/crates/simd-adler32/0.3.10) | Target dependency | [MIT license](simd-adler32-0.3.10/LICENSE.md) |
 | [syn 2.0.119](https://crates.io/crates/syn/2.0.119) | Build dependency; not linked into the NRO | [LICENSE-MIT](syn-2.0.119/LICENSE-MIT) |
 | [syn 3.0.9](https://crates.io/crates/syn/3.0.9) | Build dependency; not linked into the NRO | [LICENSE-MIT](syn-3.0.9/LICENSE-MIT) |
 | [thiserror 2.0.21](https://crates.io/crates/thiserror/2.0.21) | Target dependency | [LICENSE-MIT](thiserror-2.0.21/LICENSE-MIT) |
 | [thiserror-impl 2.0.21](https://crates.io/crates/thiserror-impl/2.0.21) | Build dependency; not linked into the NRO | [LICENSE-MIT](thiserror-impl-2.0.21/LICENSE-MIT) |
-| [tokn-endpoint-chat-completions and tokn-endpoint-core `d546ef2d`](https://github.com/tokn-ai/tokn/tree/d546ef2d306e9a952a17eae8a58366483832da05) | Target dependencies; upstream manifest version 0.2.4 | [MIT license](tokn-d546ef2d/LICENSE) |
+| [tokn-core, tokn-headers and tokn-convert `d546ef2d`](https://github.com/tokn-ai/tokn/tree/d546ef2d306e9a952a17eae8a58366483832da05) | Target dependencies; upstream manifest version 0.2.4 | [MIT license](tokn-d546ef2d/LICENSE) |
+| [tokn-endpoint-core, tokn-endpoint-chat-completions, tokn-endpoint-responses and tokn-endpoint-messages `d546ef2d`](https://github.com/tokn-ai/tokn/tree/d546ef2d306e9a952a17eae8a58366483832da05) | Target dependencies; upstream manifest version 0.2.4 | [MIT license](tokn-d546ef2d/LICENSE) |
+| [tokn-provider-deepseek, tokn-provider-openai, tokn-provider-opencode, tokn-provider-llama-cpp and tokn-provider-zai `d546ef2d`](https://github.com/tokn-ai/tokn/tree/d546ef2d306e9a952a17eae8a58366483832da05) | Target dependencies; upstream manifest version 0.2.4 | [MIT license](tokn-d546ef2d/LICENSE) |
 | [tokn-endpoint-macros `d546ef2d`](https://github.com/tokn-ai/tokn/tree/d546ef2d306e9a952a17eae8a58366483832da05) | Build dependency; not linked into the NRO | [MIT license](tokn-d546ef2d/LICENSE) |
+| [toml_datetime 1.1.2+spec-1.1.0](https://crates.io/crates/toml_datetime/1.1.2+spec-1.1.0) | Target dependency | [LICENSE-MIT](toml_datetime-1.1.2+spec-1.1.0/LICENSE-MIT) |
 | [typenum 1.20.1](https://crates.io/crates/typenum/1.20.1) | Target dependency | [LICENSE-MIT](typenum-1.20.1/LICENSE-MIT) |
 | [unicase 2.10.0](https://crates.io/crates/unicase/2.10.0) | Target dependency | [LICENSE-MIT](unicase-2.10.0/LICENSE-MIT) |
 | [unicode-ident 1.0.27](https://crates.io/crates/unicode-ident/1.0.27) | Build dependency; not linked into the NRO | [LICENSE-MIT](unicode-ident-1.0.27/LICENSE-MIT), [LICENSE-UNICODE](unicode-ident-1.0.27/LICENSE-UNICODE) |

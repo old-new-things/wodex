@@ -10,8 +10,21 @@ import threading
 import time
 
 
-def event(payload):
-  return ("data: " + json.dumps(payload, ensure_ascii=False) + "\r\n\r\n").encode("utf-8")
+def event(payload, name=None):
+  prefix = "event: " + name + "\r\n" if name else ""
+  return (prefix + "data: " + json.dumps(payload, ensure_ascii=False) + "\r\n\r\n").encode("utf-8")
+
+
+def chat_payload():
+  return b": mock keepalive\r\n\r\n" + b"".join([
+    event({"choices": [{"delta": {"role": "assistant"}}]}),
+    event({"choices": [{"delta": {"reasoning_content": "思考中…"}}]}),
+    event({"choices": [{"delta": {"content": "你好，"}}]}),
+    event({"choices": [{"delta": {"content": "Switch! 🌿"}}]}),
+    event({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
+    event({"choices": [], "usage": {"prompt_tokens": 5, "completion_tokens": 10, "total_tokens": 15}}),
+    b"data: [DONE]\r\n\r\n",
+  ])
 
 
 class MockServer(http.server.ThreadingHTTPServer):
@@ -41,11 +54,86 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
     self.wfile.write(payload)
     self.close_connection = True
 
+  def fragmented_reply(self, payload):
+    self.send_response(200)
+    self.send_header("Content-Type", "text/event-stream")
+    self.send_header("Content-Length", str(len(payload)))
+    self.send_header("Connection", "close")
+    self.end_headers()
+    # Split UTF-8, JSON strings, SSE event names and delimiters at real HTTP callbacks.
+    for offset in range(0, len(payload), 3):
+      self.wfile.write(payload[offset:offset + 3])
+      self.wfile.flush()
+      time.sleep(0.0005)
+    self.close_connection = True
+
+  def named_provider(self, body):
+    _, _, provider, protocol, *operation = self.path.split("/")
+    assert self.headers.get("Content-Type") == "application/json", "Incorrect provider content type"
+    assert self.headers.get("Accept") == "text/event-stream", "Incorrect provider stream accept header"
+    assert body["stream"] is True, "Named provider streaming not enabled"
+    if provider == "llama_cpp":
+      assert self.headers.get("Authorization") is None, "Keyless llama.cpp received authorization"
+      assert self.headers.get("x-api-key") is None, "Keyless llama.cpp received an API key"
+    elif protocol == "messages":
+      assert self.headers.get("Authorization") is None, "Messages received Bearer authentication"
+      assert self.headers.get("x-api-key") == "provider-test-key-" + provider, "Incorrect Messages key"
+      assert self.headers.get("anthropic-version") == "2023-06-01", "Missing Messages API version"
+    else:
+      assert self.headers.get("Authorization") == "Bearer provider-test-key-" + provider, "Incorrect named provider key"
+      assert self.headers.get("x-api-key") is None, "Bearer provider also received x-api-key"
+    prompt = "Respond clearly. 包含中文。"
+    if protocol == "responses":
+      assert provider == "opencode_go" and operation == ["responses"], "Incorrect Responses provider path"
+      assert body["model"] == "gpt-4o", "Incorrect Responses model"
+      assert body["instructions"] == prompt, "Responses instructions were not converted"
+      assert body["input"][0]["content"][0]["text"] == "Hello, Switch!", "Incorrect Responses input"
+      assert body["max_output_tokens"] == 37, "Responses token limit was not converted"
+      assert "messages" not in body and "max_tokens" not in body, "Chat fields reached Responses"
+      payload = b"".join([
+        event({"type": "response.reasoning_summary_text.delta", "delta": "思考中…"}, "response.reasoning_summary_text.delta"),
+        event({"type": "response.output_text.delta", "delta": "你好，Switch! 🌿"}, "response.output_text.delta"),
+        event({"type": "response.completed", "response": {"usage": {"input_tokens": 5, "output_tokens": 10, "total_tokens": 15}}}, "response.completed"),
+      ])
+    elif protocol == "messages":
+      assert provider == "opencode_go" and operation == ["messages"], "Incorrect Messages provider path"
+      assert body["model"] == "minimax-m2.5", "Incorrect Messages model"
+      assert body["system"] == prompt, "Messages system prompt was not converted"
+      assert body["messages"][0]["content"][0]["text"] == "Hello, Switch!", "Incorrect Messages input"
+      assert body["max_tokens"] == 37, "Messages token limit was not converted"
+      assert "instructions" not in body and "input" not in body, "Responses fields reached Messages"
+      payload = b"".join([
+        event({"type": "message_start", "message": {"usage": {"input_tokens": 5, "output_tokens": 0}}}, "message_start"),
+        event({"type": "content_block_delta", "delta": {"type": "thinking_delta", "thinking": "思考中…"}}, "content_block_delta"),
+        event({"type": "content_block_delta", "delta": {"type": "text_delta", "text": "你好，Switch! 🌿"}}, "content_block_delta"),
+        event({"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 10}}, "message_delta"),
+        event({"type": "message_stop"}, "message_stop"),
+      ])
+    else:
+      assert protocol == "chat_completions" and operation == ["chat", "completions"], "Incorrect Chat provider path"
+      assert body["model"] == ("mock-model" if provider in ("openai", "llama_cpp") else "glm-4.7"), "Incorrect named model"
+      assert body["messages"][0] == {"role": "system", "content": prompt}, "Named system prompt changed"
+      assert body["messages"][-1]["content"] == "Hello, Switch!", "Named history changed"
+      token_field = "max_completion_tokens" if provider == "openai" else "max_tokens"
+      assert body[token_field] == 37, "Incorrect named provider token limit"
+      assert "stream_options" not in body and "reasoning_effort" not in body, "DeepSeek options reached named provider"
+      if provider in ("zai", "zai_coding_plan", "zhipuai", "zhipuai_coding_plan"):
+        assert body["thinking"] == {"type": "enabled", "clear_thinking": False}, "Tokn Z.ai body policy changed"
+      else:
+        assert "thinking" not in body, "Unexpected named provider thinking option"
+      payload = chat_payload()
+    with self.server.lock:
+      self.server.requests[self.path] += 1
+    self.fragmented_reply(payload)
+
   def do_POST(self):
     try:
       length = int(self.headers.get("Content-Length", "0"))
       assert 0 < length < 4 * 1024 * 1024, "Invalid mock request size"
       body = json.loads(self.rfile.read(length))
+      if self.path.startswith("/providers/"):
+        self.named_provider(body)
+        return
       assert body["model"] == "mock-model", "Incorrect model in request"
       assert body["stream"] is True, "Streaming not enabled"
       compatible = self.path.startswith("/compatible/")
@@ -64,26 +152,7 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
         self.server.requests[self.path] += 1
 
       if self.path == "/normal/chat/completions" or compatible:
-        payload = b": mock keepalive\r\n\r\n" + b"".join([
-          event({"choices": [{"delta": {"role": "assistant"}}]}),
-          event({"choices": [{"delta": {"reasoning_content": "思考中…"}}]}),
-          event({"choices": [{"delta": {"content": "你好，"}}]}),
-          event({"choices": [{"delta": {"content": "Switch! 🌿"}}]}),
-          event({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
-          event({"choices": [], "usage": {"prompt_tokens": 5, "completion_tokens": 10, "total_tokens": 15}}),
-          b"data: [DONE]\r\n\r\n",
-        ])
-        self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream")
-        self.send_header("Content-Length", str(len(payload)))
-        self.send_header("Connection", "close")
-        self.end_headers()
-        # Tiny writes deliberately split UTF-8, JSON strings, and SSE delimiters.
-        for offset in range(0, len(payload), 3):
-          self.wfile.write(payload[offset:offset + 3])
-          self.wfile.flush()
-          time.sleep(0.0005)
-        self.close_connection = True
+        self.fragmented_reply(chat_payload())
       elif self.path == "/unauthorized/chat/completions":
         self.reply(401, b'{"error":"private-error-body mock-local-test-key"}', "application/json")
       elif self.path == "/redirect/chat/completions":
@@ -139,6 +208,13 @@ def main():
     "/truncated/chat/completions", "/cancel/chat/completions", "/oversized/chat/completions",
     "/compatible/max_tokens/chat/completions", "/compatible/max_completion_tokens/chat/completions",
   }
+  expected.update(
+    "/providers/" + provider + "/chat_completions/chat/completions"
+    for provider in ("openai", "opencode_go", "llama_cpp", "zai", "zai_coding_plan", "zhipuai", "zhipuai_coding_plan")
+  )
+  expected.update({
+    "/providers/opencode_go/responses/responses", "/providers/opencode_go/messages/messages",
+  })
   if result.returncode == 0 and (set(server.requests) != expected or any(count != 1 for count in server.requests.values())):
     print("Unexpected mock request count; redirects or rejected requests may have escaped validation.", file=sys.stderr)
     return 1

@@ -88,7 +88,8 @@ int main(int argc, char **argv) {
                    "  --home-menu             Open Install to dock settings\n"
                    "  --transfer              Open PC transfer settings\n"
                    "  --screenshot FILE.bmp   Render once and save a 1280×720 image\n"
-                   "Environment: DEEPSEEK_API_KEY, OPENAI_API_KEY, WODEX_DATA_DIR, WODEX_FONT, WODEX_CA_BUNDLE\n";
+                   "Provider keys: DEEPSEEK_API_KEY, OPENAI_API_KEY, OPENCODE_API_KEY, LLAMA_CPP_API_KEY, ZAI_API_KEY, ZHIPUAI_API_KEY\n"
+                   "Environment: WODEX_DATA_DIR, WODEX_FONT, WODEX_CA_BUNDLE\n";
       return 0;
     } else {
       std::cerr << "Unknown argument. Use --help.\n";

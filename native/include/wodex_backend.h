@@ -43,6 +43,7 @@ WodexTransport *wodex_transport_new(const WodexBackendApi *api, const char *ca_b
 void wodex_transport_free(WodexTransport *transport);
 bool wodex_transport_start(WodexTransport *transport, const char *url, const char *key,
                            const char *body, char **error);
+bool wodex_transport_start_request(WodexTransport *transport, const char *request_json, char **error);
 void wodex_transport_cancel(WodexTransport *transport);
 bool wodex_transport_active(const WodexTransport *transport);
 WodexTransportEvent wodex_transport_poll(WodexTransport *transport);

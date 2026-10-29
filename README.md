@@ -2,7 +2,7 @@
 
 [![Build and test](https://github.com/old-new-things/wodex/actions/workflows/build.yml/badge.svg)](https://github.com/old-new-things/wodex/actions/workflows/build.yml)
 
-A native chat client for DeepSeek and OpenAI-compatible providers on Nintendo Switch homebrew, with a desktop build for development. Inspired by wiliwili's controller navigation and readable handheld interface.
+A native chat client for multiple AI providers on Nintendo Switch homebrew, with a desktop build for development. Inspired by wiliwili's controller navigation and readable handheld interface.
 
 The app streams Markdown replies with PNG/JPEG images, saves conversations, supports thinking mode, includes a Chinese-capable font, and uses the Switch system keyboard. It can import and export configuration and sessions through a local PC browser. It also checks the Versions and Nightly channels for updates and can replace its verified Switch NRO on exit. A real ARM64 `.nro` has been cross-compiled and linked. Physical Switch testing and a live request with your own provider key are still required.
 
@@ -12,7 +12,7 @@ The app streams Markdown replies with PNG/JPEG images, saves conversations, supp
 
 1. Download `wodex.nro` from the [Nightly or Versions channel](https://old-new-things.github.io/wodex/). Copy it to `sdmc:/switch/wodex/wodex.nro`. Local builds produce `build/switch/wodex.nro`.
 2. Launch hbmenu with full application memory through your homebrew environment. For a typical title-override setup, hold **R** while launching a game, then select Wodex.
-3. Open **Settings**, choose **DeepSeek** or **OpenAI-compatible**, and enter your API key. For OpenAI-compatible services, set the provider's API base URL and exact model name, then return to chat.
+3. Open **Settings → Provider**, choose your service, and enter its API key and exact model name. Review the API endpoint, then return to chat. llama.cpp permits an empty API key if your server does not require one.
 4. Press **X** to write, confirm the keyboard, then select **Send**.
 
 Album/applet mode is unsupported. Wodex checks the launch mode before initializing graphics, networking or fonts and shows instructions to use title override instead. Older builds do not have this check; if one freezes after launching from Album, relaunch through a game with **R** held before testing again.
@@ -33,9 +33,11 @@ Models run remotely; the Switch is the chat client. Wodex connects directly to y
 
 Touch is supported. Settings provide a configurable model name, endpoint, thinking mode, response token limit, and assistant instructions. The default model is `deepseek-flash`, matching the [current DeepSeek API](https://api-docs.deepseek.com/). Change the model name in Settings when your provider changes its available models.
 
-**OpenAI-compatible** uses the Chat Completions API. Set the base URL including its API path, such as `https://api.openai.com/v1`; Wodex appends `/chat/completions`. Choose the model yourself. The response limit can use `max_tokens` or `max_completion_tokens`, depending on the service/model. DeepSeek-only thinking controls are omitted in this mode. Both modes require an API key and stream text replies; native Responses, Anthropic Messages and OAuth login are not included.
+The provider picker includes **DeepSeek**, **OpenAI**, **OpenCode Go**, **llama.cpp**, **Z.ai**, **Z.ai Coding Plan**, **Zhipu BigModel**, **Zhipu Coding Plan**, and a custom **OpenAI-compatible** endpoint. Named providers use pinned [Tokn](https://github.com/tokn-ai/tokn/tree/d546ef2d306e9a952a17eae8a58366483832da05) provider drivers for endpoint construction, authentication and request shaping. OpenCode Go chooses Chat Completions, Responses or Messages according to Tokn's model rules and converts streaming results for Wodex. OpenAI and custom OpenAI-compatible services use Chat Completions; select `max_tokens` or `max_completion_tokens` as required by the model. DeepSeek retains its thinking controls. Choose model names from your provider's available models; Wodex does not download or run them locally. Copilot and Codex account sign-in are not included in this API-key phase.
 
-Changing providers clears the current key and resets the endpoint, model and provider options. Wodex stores one active provider configuration; export it before switching if you want to keep it. Existing saves and configuration backups without a provider field continue to use DeepSeek. The protocol types come from pinned [Tokn](https://github.com/tokn-ai/tokn) crates with default features disabled; the Switch build remains `no_std + alloc`.
+Each provider retains its own saved API key, endpoint, model, assistant instructions and options. Switching restores that profile without sending another provider's credential to it. New profiles start with an empty key. Update source/channel and conversations remain shared. Existing saves and configuration backups without a provider field continue to use DeepSeek. Configuration exports include all saved provider profiles and keys; session exports contain conversations only. Provider-profile saves require a current nightly; export configuration and sessions before moving to an older build that cannot read the new fields. The Switch build remains `no_std + alloc` and uses Wodex's native HTTP worker with Tokn's portable provider/conversion crates; it does not embed Tokn's gateway or standard SDK runtime.
+
+For a llama.cpp server on your PC, enter its HTTPS endpoint or enable **Allow local HTTP** and use a private IPv4 address or `.local` hostname, such as `http://192.168.1.20:8080/v1`. HTTP sends prompts and any configured API key without encryption, so use it only on a trusted local network. This permission belongs to the llama.cpp profile and is disabled by default. Loopback HTTP remains available for development; public HTTP endpoints are rejected.
 
 ## Build and run on desktop
 
@@ -67,7 +69,11 @@ Desktop controls: arrows and Enter select; **X** opens the composer; **Ctrl/Cmd 
 | Environment variable | Purpose |
 | --- | --- |
 | `DEEPSEEK_API_KEY` | Desktop session key override for DeepSeek only; never writes that override to disk |
-| `OPENAI_API_KEY` | Desktop session key override for the selected OpenAI-compatible endpoint only; never writes that override to disk |
+| `OPENAI_API_KEY` | Desktop session key override for OpenAI or the selected OpenAI-compatible endpoint; never writes that override to disk |
+| `OPENCODE_API_KEY` | Desktop session key override for OpenCode Go |
+| `LLAMA_CPP_API_KEY` | Optional desktop session key override for llama.cpp |
+| `ZAI_API_KEY` | Desktop session key override for Z.ai and Z.ai Coding Plan |
+| `ZHIPUAI_API_KEY` | Desktop session key override for Zhipu BigModel and Zhipu Coding Plan |
 | `WODEX_DATA_DIR` | Desktop data directory override |
 | `WODEX_FONT` | Desktop TrueType/OpenType font override; otherwise uses the bundled CJK font |
 | `WODEX_CA_BUNDLE` | Desktop custom CA bundle for HTTPS verification |
@@ -94,7 +100,7 @@ Successful `main` builds publish timestamped nightlies to [GitHub Pages](https:/
 - History and keys entered in Settings are stored **unencrypted** locally. Desktop directories/files use user-only permissions; an SD card does not provide that isolation. The environment key override is session-only.
 - Storage is versioned and bounded. Writes preserve the previous save on interruption. Unreadable saves are copied to a unique `state.json.recovery-N` file before starting fresh; they are never silently overwritten.
 - Interrupted replies retain their partial text and can be retried from Settings. Incomplete assistant replies and prior reasoning are omitted from subsequent API context. Sending is serialized so responses cannot cross between conversations.
-- Provider HTTPS certificates are verified, redirects are refused, and provider error bodies are not displayed. Plain HTTP provider endpoints are limited to loopback addresses for local tests. The explicitly started PC transfer listener uses local HTTP without TLS.
+- Provider HTTPS certificates are verified, redirects are refused, and provider error bodies are not displayed. Plain HTTP provider endpoints require loopback addresses or an explicit llama.cpp private-LAN opt-in. Environment key overrides are never archived in provider profiles or exported. The explicitly started PC transfer listener uses local HTTP without TLS.
 - Limits: 32 conversations, 128 messages per conversation, 64 KiB per prompt, 512 KiB combined answer/reasoning, 2 MiB total message text, and 4 MiB saved JSON. Delete an older conversation when storage is full. Long answers remain fully scrollable.
 
 Current scope is text chat with Markdown and images referenced in replies. Image uploads, image generation, tool execution, search, and account login are outside this release. Switch keyboard input follows libnx's size limits; a very long existing draft cannot be reopened without shortening it.
@@ -121,7 +127,7 @@ In current nightlies, open **Settings → Install to dock** to install a Wodex t
 
 ## PC import and export
 
-In current nightlies, open **Settings → PC transfer → Start PC transfer**, then open the displayed address in a browser on a PC connected to the same local network. Enter the pairing code to edit the provider, saved API key, endpoint, model and assistant instructions directly in the browser. **Advanced settings** contains provider options, response limit and update settings. Choose **Send changes to Switch**, then confirm the replacement on the Switch. You can also download or upload **Configuration** and **Sessions** as separate JSON backups.
+In current nightlies, open **Settings → PC transfer → Start PC transfer**, then open the displayed address in a browser on a PC connected to the same local network. Enter the pairing code to choose a provider and edit its saved API key, endpoint, model and assistant instructions directly in the browser. Each provider keeps its own draft and saved profile. **Advanced settings** contains provider options, response limit and update settings. Choose **Send changes to Switch**, then confirm the replacement on the Switch. You can also download or upload **Configuration** and **Sessions** as separate JSON backups.
 
 The browser masks the **saved API key** until you choose to show it; configuration downloads include the key. The desktop environment override stays private. Sessions contain conversations and reasoning without configuration. Browser edits and file imports wait for confirmation on the Switch, replace only their selected channel, and keep a recovery copy of the previous save. Transfers use local HTTP without encryption, so use a trusted network. Stop transfer, go back, or exit Wodex when finished; it also expires after 15 minutes. [PC transfer instructions and file formats](docs/transfer.md) cover editing, limits and recovery. Physical Switch LAN transfer still needs hardware verification.
 

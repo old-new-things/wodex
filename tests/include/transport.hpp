@@ -18,6 +18,7 @@ public:
   Transport(const Transport&) = delete;
   Transport& operator=(const Transport&) = delete;
   void start(const std::string& url, const std::string& key, const std::string& body);
+  void start_request(const std::string& request_json);
   void cancel();
   std::vector<TransportEvent> poll();
   bool active() const;

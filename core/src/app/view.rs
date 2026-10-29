@@ -16,6 +16,7 @@ pub enum Page {
   #[default]
   Chat,
   Settings,
+  Providers,
   Updates,
   HomeMenu,
   Transfer,
@@ -30,6 +31,7 @@ pub enum Setting {
   SystemPrompt,
   MaxTokens,
   TokenLimitField,
+  AllowInsecureHttp,
   UpdateRepository,
 }
 
@@ -44,7 +46,9 @@ pub enum Action {
   Send,
   Stop,
   EditSetting(Setting),
+  ChooseProvider,
   Provider(Provider),
+  ProvidersBack,
   Updates,
   Retry,
   DeleteChat,
@@ -166,6 +170,7 @@ pub fn render(
   match view.ui.page {
     Page::Chat => view.chat(demo),
     Page::Settings => view.settings(),
+    Page::Providers => view.providers(),
     Page::Updates => view.updates(update, version, demo, install_supported),
     Page::HomeMenu => view.home_menu(home_menu, demo, home_menu_blocked),
     Page::Transfer => view.transfer(demo),
@@ -501,27 +506,24 @@ impl View<'_> {
     let state = self.state;
     let settings = &state.settings;
     self.canvas.text("Provider", 332, 143, 19, INK, 0);
-    for (provider, id, area) in [
-      (Provider::DeepSeek, "provider-deepseek", rect(600, 132, 256, 44)),
-      (Provider::OpenAiCompatible, "provider-openai", rect(872, 132, 364, 44)),
-    ] {
-      self.button(
-        id,
-        provider.label(),
-        area,
-        Action::Provider(provider),
-        settings.provider == provider,
-      );
-    }
+    self.button(
+      "provider-selector",
+      &format!("{}   ·   Change", settings.provider.label()),
+      rect(600, 132, 636, 44),
+      Action::ChooseProvider,
+      true,
+    );
     self.canvas.text(
-      "Switching providers clears the saved key and resets the endpoint and model.",
+      "Each provider keeps its own saved key, model, endpoint and instructions.",
       332,
       186,
       14,
       MUTED,
       0,
     );
-    let key = if settings.api_key.is_empty() {
+    let key = if settings.api_key.is_empty() && !settings.provider.requires_api_key() {
+      "Optional"
+    } else if settings.api_key.is_empty() {
       "Add your key"
     } else if self.ui.environment_key {
       "••••••••  ·  from environment"
@@ -536,6 +538,13 @@ impl View<'_> {
         "setting-thinking",
         "Thinking mode",
         if settings.thinking { "On" } else { "Off" },
+      )
+    } else if settings.provider == Provider::LlamaCpp {
+      (
+        Setting::AllowInsecureHttp,
+        "setting-allow_insecure_http",
+        "Allow local HTTP",
+        if settings.allow_insecure_http { "On · trusted local network only" } else { "Off" },
       )
     } else {
       (
@@ -585,6 +594,43 @@ impl View<'_> {
       600,
       16,
       if self.ui.notice.is_empty() { MUTED } else { DANGER },
+      910,
+    );
+  }
+
+  fn providers(&mut self) {
+    self.canvas.text("A PLACE FOR EVERY MODEL", 318, 30, 15, ACCENT, 0);
+    self.canvas.text("Choose provider", 312, 68, 36, INK, 0);
+    self.button(
+      "providers-back",
+      "Back to Settings",
+      rect(994, 64, 242, 46),
+      Action::ProvidersBack,
+      false,
+    );
+    self.canvas.text(
+      "Switch providers without re-entering their saved settings.",
+      318,
+      132,
+      20,
+      MUTED,
+      910,
+    );
+    for (index, provider) in Provider::ALL.into_iter().enumerate() {
+      self.button(
+        &format!("provider-{}", provider.id()),
+        provider.label(),
+        rect(314 + (index % 2) as i32 * 470, 180 + (index / 2) as i32 * 78, 452, 58),
+        Action::Provider(provider),
+        self.state.settings.provider == provider,
+      );
+    }
+    self.canvas.text(
+      "API-key providers. OpenAI-compatible also supports a custom endpoint.",
+      318,
+      606,
+      16,
+      MUTED,
       910,
     );
   }
@@ -1110,7 +1156,7 @@ mod tests {
 
   #[test]
   fn settings_provider_options_fit_and_keep_navigation_actions_visible() {
-    for provider in [Provider::DeepSeek, Provider::OpenAiCompatible] {
+    for provider in Provider::ALL {
       let (backend, mut canvas) = canvas();
       let mut state = WodexCore::default().state().clone();
       state.settings.provider = provider;
@@ -1129,8 +1175,7 @@ mod tests {
         None,
       );
       for action in [
-        Action::Provider(Provider::DeepSeek),
-        Action::Provider(Provider::OpenAiCompatible),
+        Action::ChooseProvider,
         Action::Transfer,
         Action::HomeMenu,
         Action::Updates,
@@ -1149,7 +1194,13 @@ mod tests {
       );
       assert_eq!(
         buttons.iter().any(|button| button.action == Action::EditSetting(Setting::TokenLimitField)),
-        provider == Provider::OpenAiCompatible
+        !matches!(provider, Provider::DeepSeek | Provider::LlamaCpp)
+      );
+      assert_eq!(
+        buttons
+          .iter()
+          .any(|button| button.action == Action::EditSetting(Setting::AllowInsecureHttp)),
+        provider == Provider::LlamaCpp
       );
       let settings_buttons: Vec<_> = buttons.iter().filter(|button| button.area.x >= 300).collect();
       for (index, button) in settings_buttons.iter().enumerate() {
@@ -1173,6 +1224,35 @@ mod tests {
         assert!(backend.drawn_text.iter().any(|text| text == "Enter your provider's model name"));
       }
     }
+  }
+
+  #[test]
+  fn provider_picker_shows_every_provider_once_and_fits_the_screen() {
+    let (backend, mut canvas) = canvas();
+    let state = WodexCore::default().state().clone();
+    let mut ui = ViewState { page: Page::Providers, ..ViewState::default() };
+    let buttons = render(
+      &mut canvas,
+      &state,
+      &mut ui,
+      &status(UpdatePhase::Idle),
+      &HomeMenuStatus::default(),
+      false,
+      "0.2.1",
+      false,
+      true,
+      None,
+    );
+    for provider in Provider::ALL {
+      let matching: Vec<_> =
+        buttons.iter().filter(|button| button.action == Action::Provider(provider)).collect();
+      assert_eq!(matching.len(), 1);
+      let area = matching[0].area;
+      assert!(area.x >= 314 && area.x + area.w <= 1236);
+      assert!(area.y >= 180 && area.y + area.h <= 550);
+      assert!(backend.drawn_text.iter().any(|text| text == provider.label()));
+    }
+    assert!(buttons.iter().any(|button| button.action == Action::ProvidersBack));
   }
 
   #[test]

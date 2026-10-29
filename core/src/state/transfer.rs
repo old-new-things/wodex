@@ -90,7 +90,7 @@ impl WodexCore {
       Document::Config { settings, .. } => {
         saved.settings = settings;
         String::from(
-          "Replace configuration, including the saved API key. Sessions remain unchanged. Imported provider settings determine where future messages and your API key are sent.",
+          "Replace configuration, including all provider profiles and saved API keys. Sessions remain unchanged. Imported provider settings determine where future messages and credentials are sent.",
         )
       }
       Document::Sessions { conversations, active_id, .. } => {

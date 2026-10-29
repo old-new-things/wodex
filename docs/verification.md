@@ -1,13 +1,13 @@
 # Verified build
 
-Verification updated on 2026-10-29.
+Verification updated on 2026-10-30.
 
 | Check | Result |
 | --- | --- |
 | Rust formatting and Clippy with warnings denied | Passed |
-| Rust application, backend, editor, renderer, image decoding, protocol, update-feed validation and hashing tests | 204 passed |
+| Rust application, backend, editor, renderer, image decoding, protocol, update-feed validation and hashing tests | 224 passed |
 | Compiled nightly/version identity and repeat-update detection | Passed with both publication identities; partial or invalid build metadata rejected |
-| Native integration against isolated loopback API | 91 checks passed, including strict OpenAI-compatible requests with both token-limit fields |
+| Native integration against isolated loopback API | 201 checks passed, including all named API-key providers, three streaming protocols, prepared headers and keyless llama.cpp |
 | Rust application through real SDL input, rendering, curl and save/reload | 35 checks passed |
 | Native SDL/libnx callback interface and input normalization | 18 checks passed |
 | Bundled CJK glyph coverage and mixed-language rendering | 216 checks passed, including styled fonts, the monospace code face and baseline metrics |
@@ -17,7 +17,7 @@ Verification updated on 2026-10-29.
 | PC transfer schemas, server access/framing/lifetime and application import policy | 10 state, 16 backend and 11 application tests passed |
 | PC browser protocol through the real Rust app and native sockets | 176 checks passed, including provider selection, saved-key exports, independent imports, confirmation, rejection, recovery and responsive shutdown |
 | PC transfer native UI | Ready, active, confirmation and Settings screens rendered and visually inspected |
-| Embedded TypeScript browser client | Strict compilation and 26 behavior tests passed; CI checks regenerated JavaScript and executes the tests |
+| Embedded TypeScript browser client | Strict compilation and 36 behavior tests passed; CI checks regenerated JavaScript and executes the tests |
 | Key-free forwarder validation and reproducibility | 6 Python tests passed; offline rebuild matched all committed template bytes |
 | Native forwarder header encryption | Pinned libnx AES-XTS encrypted six sectors with a public test key; independent mbedTLS decryption reproduced the original header |
 | Markdown typography, CJK, code/quotes/tasks, regular/wide tables, interrupted replies and offline image cards | Six saved-state previews rendered and visually inspected |
@@ -39,9 +39,9 @@ Verification updated on 2026-10-29.
 | Maximum-size 512 KiB reply, 262,141 short lines | 0.124 seconds for startup/render/screenshot, 51.2 MiB peak RSS; final marker visible |
 | Maximum-size 512 KiB reply, one long paragraph | 0.075 seconds for startup/render/screenshot, 48.8 MiB peak RSS; final marker visible |
 
-Local NRO: `build/switch/wodex.nro`, version 0.2.1, 27,153,242 bytes (about 25.9 MiB). The embedded NACP version is verified. This local build uses the development identity; CI embeds the actual publication identity.
+Local NRO: `build/switch/wodex.nro`, version 0.2.1, 27,353,226 bytes (about 25.9 MiB). The embedded NACP version is verified. This local build uses the development identity; CI embeds the actual publication identity.
 
-SHA-256: `dee43538631ed4ebce211500d9beab132c04e04aa51b3fc801bdf6d08f667856`. Published CI binaries embed their actual workflow identity and have their own download checksums.
+SHA-256: `3dd3273ea65c451310ca27ff8f4b18739b13c2c094b68290ebc453f5aebb4e4e`. Published CI binaries embed their actual workflow identity and have their own download checksums.
 
 Native tests call the production Rust transport and storage through test-only C++ facades. They cover actual curl transfer, every-byte fragmented UTF-8 SSE, reasoning/content/usage, retry context, authentication errors without response-body leakage, redirect refusal, truncation, cancellation, queue limits, private desktop writes, unique recovery backups, and persistence roundtrips. The application test drives the production Rust application through SDL compose, editor cancellation, send, retry, update navigation and exit/reload, including an environment-only API key. Adapter tests verify normalized SDL/libnx input and clipboard values. Font tests exercise the Rust filename selection and renderer for Simplified/Traditional Chinese, Latin, kana, Hangul, punctuation and representative rare CJK characters, wrapping and clipping at four UI point sizes, font overrides and resource selection.
 
@@ -61,11 +61,15 @@ The Settings entry, installation page title and confirmation action use **Instal
 
 HOME Menu tests validate the pinned template, dependent hashes, content metadata and title ID. Failure injection exercises each pre-registration operation, partial placeholder creation/registration, uncertain metadata writes, uncertain HOME Menu registration, collisions and failed cleanup. Referenced or pre-existing content is retained when ownership or registration cannot be established. UI tests cover failed saves, demo mode, busy operations, stale actions, exit blocking and readable recovery messages. The 177,172-byte template's SHA-256 is `683bfe7ececc3ee317cd64b3c951c43df85353f050dcb9884fee2d719a635c92`; source and generator checksums are recorded in its manifest. Its return path requests normal application exit without waiting for foreground focus, including after older NROs return. The actual Switch service calls are compile-checked; host mocks cannot prove their behavior on a console.
 
-PC transfer tests exercise real HTTP connections against the application, including inaccessible unauthenticated exports, Host/Origin checks, channel isolation, Unicode imports, saved-key inclusion and environment-key exclusion. Fault injection covers malformed framing, partial writes, expiry, rejected uploads with unread request bodies, import save failures before and after commit, and unknown storage outcomes that lock further writes. The generated browser script is executed in a Node VM with the actual HTML control structure and mocked DOM, HTTP responses and timers. Its 26 tests cover automatic configuration loading, masked-key clearing, complete form payloads, advanced settings, Unicode byte limits, device confirmation/rejection, dirty-draft reload, competing imports, failed loads and stale responses. Native screenshots cover transfer setup, active pairing, import confirmation, and both provider Settings layouts; browser visual interaction was not exercised.
+PC transfer tests exercise real HTTP connections against the application, including inaccessible unauthenticated exports, Host/Origin checks, channel isolation, Unicode imports, saved-key inclusion and environment-key exclusion. Fault injection covers malformed framing, partial writes, expiry, rejected uploads with unread request bodies, import save failures before and after commit, and unknown storage outcomes that lock further writes. The generated browser script is executed in a Node VM with the actual HTML control structure and mocked DOM, HTTP responses and timers. Its 36 tests cover automatic configuration loading, masked-key clearing, complete form payloads, advanced settings, Unicode byte limits, device confirmation/rejection, dirty-draft reload, competing imports, failed loads and stale responses. Native screenshots cover transfer setup, active pairing, import confirmation, and both provider Settings layouts; browser visual interaction was not exercised.
 
 Tokn was refreshed to [`d546ef2d`](https://github.com/tokn-ai/tokn/tree/d546ef2d306e9a952a17eae8a58366483832da05) on 2026-10-29. The breaking SDK refactor replaces `DirectClient` with the shared `Client` pipeline; Wodex imports only the endpoint/core schema crates, whose sources, manifests and inherited dependencies are unchanged from its previous pin. The update therefore requires no application migration. Formatting, Clippy, all 197 application and 12 publisher tests, all twelve desktop suites, and the Switch `no_std` build passed with the new pin.
 
-Tokn integration uses pinned `no_std` endpoint/core crates for typed Chat Completions requests and streamed chunks. Tests cover DeepSeek options, generic requests without vendor-specific fields, both token-limit parameter names, legacy configuration defaults, incomplete generic setup, provider credential reset, per-provider environment keys, and imports that preserve saved/runtime credential separation. The generic loopback mock rejects unsupported request fields and verifies its distinct Bearer key. The final target dependency graph contains no `std`, Tokio or Reqwest dependency. Both provider settings screens were rendered through the native SDL harness and visually checked at 1280×720.
+Provider integration now uses Tokn's pinned `no_std` provider drivers, header policy, wire types and protocol conversion. All nine choices are exposed in the native picker and PC editor. Tests cover isolated saved keys, endpoints, prompts and options through switching, save/reload and config transfer; active-profile duplication and invalid inactive profiles are rejected. Environment keys never enter archived profiles or exports. Keyless llama.cpp omits Authorization, and private IPv4/`.local` HTTP requires an explicit llama.cpp setting. All new dependencies compiled for the actual Switch target; its normal dependency graph contains no Tokio, Reqwest or standard SDK runtime.
+
+Native loopback tests send the prepared Tokn headers and bodies for OpenAI, all four Z.ai/Zhipu variants, keyless llama.cpp, and OpenCode Go's Chat Completions, Responses and Messages modes. They verify exclusive Bearer/x-api-key authentication, API version, UTF-8 text, reasoning, usage, finish reasons, persistence and invalid-header rejection. Fourteen stream tests include native terminal failures, refusal text, and full terminal snapshots containing a 300 KiB answer or a JSON-escaped 512 KiB answer without duplicate display. Responses uses a bounded 4 MiB line/event allowance; other protocols retain their existing smaller caps. All responses remain subject to the 16 MiB raw stream, 8 MiB queue and 512 KiB displayed-answer limits.
+
+Native previews at 1280×720 show all nine provider choices, controller focus/cancellation, restored DeepSeek settings, optional llama.cpp keys and the local HTTP toggle without clipping or overlap. The browser's 36 tests cover full-profile drafts, restoration, validation and stale-map detection in addition to the existing import confirmation and connection behavior. No live provider credential or OAuth login was used.
 
 An intermittent freeze was reported after launching through Album. Startup now rejects `AppletType_LibraryApplet` before initializing application services, SDL or font caches, and uses the existing console error screen to explain title override. Low-memory pressure is a plausible cause, but the reported HOME-button freeze has not been reproduced or conclusively attributed to memory or updating. Full-memory Application/SystemApplication launches remain accepted.
 

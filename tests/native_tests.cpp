@@ -70,8 +70,7 @@ Json request(Core& core, const std::string& endpoint) {
 }
 
 void start(wodex::Transport& transport, const Json& request) {
-  transport.start(request.at("url").get<std::string>(), request.at("api_key").get<std::string>(),
-    request.at("body").dump());
+  transport.start_request(request.dump());
 }
 
 struct Result {
@@ -176,6 +175,66 @@ void test_compatible_provider(const std::string& base_url) {
   }
 }
 
+void test_named_providers_and_native_protocols(const std::string& base_url) {
+  struct Scenario {
+    const char* provider;
+    const char* model;
+    const char* protocol;
+    const char* suffix;
+    const char* token_field;
+  };
+  for (const auto& scenario : {
+      Scenario{"openai", "mock-model", "chat_completions", "chat/completions", "max_completion_tokens"},
+      Scenario{"opencode_go", "glm-4.7", "chat_completions", "chat/completions", "max_tokens"},
+      Scenario{"llama_cpp", "mock-model", "chat_completions", "chat/completions", "max_tokens"},
+      Scenario{"zai", "glm-4.7", "chat_completions", "chat/completions", "max_tokens"},
+      Scenario{"zai_coding_plan", "glm-4.7", "chat_completions", "chat/completions", "max_tokens"},
+      Scenario{"zhipuai", "glm-4.7", "chat_completions", "chat/completions", "max_tokens"},
+      Scenario{"zhipuai_coding_plan", "glm-4.7", "chat_completions", "chat/completions", "max_tokens"},
+      Scenario{"opencode_go", "gpt-4o", "responses", "responses", "max_output_tokens"},
+      Scenario{"opencode_go", "minimax-m2.5", "messages", "messages", "max_tokens"},
+    }) {
+    Core core;
+    wodex::Transport transport;
+    const std::string key = std::string(scenario.provider) == "llama_cpp" ? "" :
+      std::string{"provider-test-key-"} + scenario.provider;
+    const std::string endpoint = base_url + "/providers/" + scenario.provider + "/" + scenario.protocol;
+    const auto settings = core.call({{"op", "settings"}, {"settings", {
+      {"provider", scenario.provider}, {"api_key", key}, {"base_url", endpoint},
+      {"model", scenario.model}, {"max_tokens", 37},
+      {"system_prompt", "Respond clearly. 包含中文。"}
+    }}});
+    check(settings.value("ok", false), "A named provider rejected valid loopback settings.");
+    const auto response = core.call({{"op", "send"}, {"content", "Hello, Switch!"}});
+    check(response.value("ok", false), "A named provider failed to prepare a request.");
+    const auto& outgoing = response.at("request");
+    check(outgoing.at("url") == endpoint + "/" + scenario.suffix &&
+      outgoing.at("protocol") == scenario.protocol, "Tokn selected the wrong provider operation.");
+    check(outgoing.at("body").at(scenario.token_field) == 37,
+      "Tokn did not preserve the configured response token limit.");
+    start(transport, outgoing);
+    const auto result = drain(transport, &core, true);
+    check(result.status == 200 && result.error.empty(), "A named provider failed HTTP streaming.");
+    const auto state = core.state();
+    const auto& answer = state.at("conversations").at(0).at("messages").at(1);
+    check(answer.at("content") == "你好，Switch! 🌿" && answer.at("reasoning_content") == "思考中…",
+      "Provider protocol conversion lost UTF-8 text or reasoning.");
+    check(answer.at("status") == "complete" && answer.at("finish_reason") == "stop",
+      "A native provider protocol did not finish the answer cleanly.");
+    check(answer.at("usage").at("prompt_tokens") == 5 &&
+      answer.at("usage").at("completion_tokens") == 10 && answer.at("usage").at("total_tokens") == 15,
+      "A provider's usage counters were not normalized.");
+    const auto saved = core.call({{"op", "export"}}).at("data").dump();
+    Core restored{saved.c_str()};
+    const auto restored_state = restored.state();
+    check(restored_state.at("settings").at("provider") == scenario.provider &&
+      restored_state.at("settings").at("api_key") == key,
+      "A named provider's configuration did not survive save/reload.");
+    check(restored_state.at("conversations").at(0).at("messages").at(1) == answer,
+      "The normalized provider response did not survive save/reload.");
+  }
+}
+
 void test_truncated(const std::string& base_url) {
   Core core;
   wodex::Transport transport;
@@ -230,6 +289,37 @@ void test_validation(const std::string& base_url) {
   transport.start(good_url, "mock-key\r\nInjected: value", "{}");
   const auto result = drain(transport);
   check(result.status == 0 && !result.error.empty(), "An injected API header was accepted.");
+}
+
+void test_prepared_request_validation(const std::string& base_url) {
+  Core core;
+  const auto outgoing = request(core, base_url + "/normal");
+  for (const auto& headers : {
+      Json::array({Json::array({"Authorization", "Bearer mock-key\r\nInjected: value"})}),
+      Json::array({Json::array({"Host", "unrelated.example"})}),
+      Json::array({Json::array({"Authorization", "Bearer key"}), Json::array({"authorization", "Bearer other"})}),
+    }) {
+    auto invalid = outgoing;
+    invalid["headers"] = headers;
+    wodex::Transport transport;
+    start(transport, invalid);
+    const auto result = drain(transport);
+    check(result.status == 0 && !result.error.empty() && result.data.empty(),
+      "An injected, disallowed or duplicate prepared header reached HTTP.");
+  }
+  auto invalid = outgoing;
+  invalid["url"] = "http://example.com/v1/chat/completions";
+  invalid["allow_insecure_http"] = true;
+  wodex::Transport transport;
+  start(transport, invalid);
+  const auto result = drain(transport);
+  check(result.status == 0 && !result.error.empty() && result.data.empty(),
+    "Local HTTP opt-in allowed a public cleartext provider request.");
+  invalid = outgoing;
+  invalid["allow_insecure_http"] = "true";
+  bool rejected = false;
+  try { start(transport, invalid); } catch (const std::runtime_error&) { rejected = true; }
+  check(rejected && !transport.active(), "A malformed local HTTP opt-in started a request.");
 }
 
 void test_bounded_queue(const std::string& base_url) {
@@ -308,10 +398,12 @@ int main(int argc, char** argv) {
     const std::string base_url = argv[1];
     test_normal(base_url);
     test_compatible_provider(base_url);
+    test_named_providers_and_native_protocols(base_url);
     test_http_errors(base_url);
     test_truncated(base_url);
     test_cancel(base_url);
     test_validation(base_url);
+    test_prepared_request_validation(base_url);
     test_bounded_queue(base_url);
     test_persistence();
     std::cout << "Native integration: " << passed << " checks passed.\n";

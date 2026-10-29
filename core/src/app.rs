@@ -12,11 +12,7 @@ use crate::backend::transfer::TransferExports;
 use crate::state::transfer::{PreparedTransfer, TransferChannel};
 use crate::state::{Command, SettingsPatch, WodexCore, OFFICIAL_UPDATE_REPOSITORY};
 use crate::update::UpdateChannel;
-use alloc::{
-  format,
-  string::{String, ToString},
-  vec::Vec,
-};
+use alloc::{format, string::String, vec::Vec};
 use canvas::Canvas;
 use editor::{EditResult, EditTarget, Editor};
 use host::{Host, Input, Key, TransportEvent, UpdatePhase, UpdateStatus, CTRL, GUI};
@@ -75,7 +71,10 @@ impl<H: Host> App<H> {
           "Saved data could not be read. A recovery copy is beside state.json.".into();
       }
       app.apply_environment_key();
-      if app.ui.notice.is_empty() && app.core.state().settings.api_key.is_empty() {
+      if app.ui.notice.is_empty()
+        && app.core.state().settings.provider.requires_api_key()
+        && app.core.state().settings.api_key.is_empty()
+      {
         app.ui.notice =
           "Welcome to Wodex. Choose your provider and add an API key in Settings.".into();
       }
@@ -511,7 +510,33 @@ impl<H: Host> App<H> {
     let provider = self.core.state().settings.provider;
     let editing_key =
       matches!(&command, Command::Settings { settings } if settings.api_key.is_some());
+    let changing_provider = matches!(&command, Command::Settings { settings }
+      if settings.provider.is_some_and(|next| next != provider));
+    // Provider switching archives the outgoing profile. Restore its saved key
+    // first so an environment override never enters that archive or an export.
+    let runtime_key = if changing_provider && self.ui.environment_key {
+      let key = self.core.state().settings.api_key.clone();
+      let saved = SettingsPatch { api_key: Some(self.stored_key.clone()), ..Default::default() };
+      if let Err(error) = self.core.execute(Command::Settings { settings: saved }) {
+        self.ui.notice = error;
+        return None;
+      }
+      Some(key)
+    } else {
+      None
+    };
     let result = self.core.execute(command);
+    if result.is_err() {
+      if let Some(key) = runtime_key {
+        let restore = SettingsPatch { api_key: Some(key), ..Default::default() };
+        if let Err(error) = self.core.execute(Command::Settings { settings: restore }) {
+          self.ui.environment_key = false;
+          self.stored_key.clear();
+          self.ui.notice = error;
+          return None;
+        }
+      }
+    }
     self.ui.notice = result.as_ref().err().cloned().unwrap_or_default();
     if result.is_ok() {
       if provider != self.core.state().settings.provider {
@@ -535,12 +560,10 @@ impl<H: Host> App<H> {
     }
     let Some(result) = self.mutate(command) else { return };
     let request = &result["request"];
-    let (Some(url), Some(key), Some(body)) =
-      (request["url"].as_str(), request["api_key"].as_str(), request.get("body"))
-    else {
+    if request.is_null() {
       return;
-    };
-    if self.host.start(url, key, &body.to_string()).is_err() {
+    }
+    if self.host.start_prepared(request).is_err() {
       self.mutate(Command::Finish {
         http_status: None,
         error: Some("Could not start the network request.".into()),
@@ -789,7 +812,16 @@ impl<H: Host> App<H> {
       Action::Send => self.send(),
       Action::Stop => self.stop(),
       Action::EditSetting(setting) => self.edit_setting(setting),
+      Action::ChooseProvider => {
+        self.ui.page = Page::Providers;
+        self.ui.confirm_delete = false;
+        self.ui.focused = format!("provider-{}", self.core.state().settings.provider.id());
+      }
       Action::Provider(provider) => self.change_provider(provider),
+      Action::ProvidersBack => {
+        self.ui.page = Page::Settings;
+        self.ui.focused = "provider-selector".into();
+      }
       Action::Updates => {
         self.ui.page = Page::Updates;
         self.ui.confirm_delete = false;
@@ -990,6 +1022,9 @@ impl<H: Host> App<H> {
       return;
     }
     if self.core.state().settings.provider == provider {
+      self.ui.page = Page::Settings;
+      self.ui.focused = "provider-selector".into();
+      self.buttons.clear();
       return;
     }
     let patch = SettingsPatch { provider: Some(provider), ..Default::default() };
@@ -998,16 +1033,12 @@ impl<H: Host> App<H> {
         self.ui.notice = if self.ui.environment_key {
           "Provider changed. Its environment key is active; review the model and endpoint."
         } else {
-          "Provider changed. Add your API key, then review the model and endpoint."
+          "Provider changed. Its saved settings are restored; review the model and endpoint."
         }
         .into();
       }
-      self.ui.focused = if provider == crate::provider::Provider::DeepSeek {
-        "provider-deepseek"
-      } else {
-        "provider-openai"
-      }
-      .into();
+      self.ui.page = Page::Settings;
+      self.ui.focused = "provider-selector".into();
       self.buttons.clear();
     }
   }
@@ -1035,7 +1066,7 @@ impl<H: Host> App<H> {
         return;
       }
       Setting::TokenLimitField => {
-        if settings.provider != Provider::OpenAiCompatible {
+        if matches!(settings.provider, Provider::DeepSeek | Provider::LlamaCpp) {
           return;
         }
         let token_limit_field = match settings.token_limit_field {
@@ -1044,6 +1075,17 @@ impl<H: Host> App<H> {
         };
         let patch =
           SettingsPatch { token_limit_field: Some(token_limit_field), ..Default::default() };
+        self.mutate(Command::Settings { settings: patch });
+        return;
+      }
+      Setting::AllowInsecureHttp => {
+        if settings.provider != Provider::LlamaCpp {
+          return;
+        }
+        let patch = SettingsPatch {
+          allow_insecure_http: Some(!settings.allow_insecure_http),
+          ..Default::default()
+        };
         self.mutate(Command::Settings { settings: patch });
         return;
       }
@@ -1095,7 +1137,7 @@ impl<H: Host> App<H> {
         };
         patch.max_tokens = Some(tokens);
       }
-      Setting::Thinking | Setting::TokenLimitField => return,
+      Setting::Thinking | Setting::TokenLimitField | Setting::AllowInsecureHttp => return,
     }
     if self.mutate(Command::Settings { settings: patch }).is_some()
       && setting == Setting::UpdateRepository
@@ -1159,6 +1201,8 @@ impl<H: Host> App<H> {
   fn back(&mut self) {
     if self.ui.page == Page::Transfer {
       self.dispatch(Action::TransferBack);
+    } else if self.ui.page == Page::Providers {
+      self.dispatch(Action::ProvidersBack);
     } else if self.ui.page == Page::HomeMenu {
       if !self.host.home_menu_active() {
         self.dispatch(Action::HomeMenuBack);

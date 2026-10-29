@@ -50,6 +50,13 @@ void Transport::start(const std::string &url, const std::string &key, const std:
   const bool success = wodex_transport_start(impl_->value.get(), url.c_str(), key.c_str(), body.c_str(), &error);
   checked(success, error);
 }
+void Transport::start_request(const std::string &request_json) {
+  if (request_json.find('\0') != std::string::npos)
+    throw std::runtime_error("Cannot marshal a NUL-containing provider request.");
+  char *error = nullptr;
+  const bool success = wodex_transport_start_request(impl_->value.get(), request_json.c_str(), &error);
+  checked(success, error);
+}
 void Transport::cancel() { wodex_transport_cancel(impl_->value.get()); }
 bool Transport::active() const { return wodex_transport_active(impl_->value.get()); }
 std::vector<TransportEvent> Transport::poll() {

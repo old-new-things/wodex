@@ -187,6 +187,27 @@ pub unsafe extern "C" fn wodex_transport_start(
   )
   .is_some()
 }
+
+#[no_mangle]
+pub unsafe extern "C" fn wodex_transport_start_request(
+  value: *mut TransportBridge,
+  request: *const c_char,
+  error: *mut *mut c_char,
+) -> bool {
+  checked(
+    (|| {
+      let request = text(request)?;
+      if request.len() > 4 * 1024 * 1024 + 64 * 1024 {
+        return Err("The prepared request exceeds its size limit.".into());
+      }
+      let request = serde_json::from_str(request)
+        .map_err(|_| String::from("Invalid prepared request JSON."))?;
+      value.as_mut().ok_or("Missing network backend.")?.value.start_request(&request)
+    })(),
+    error,
+  )
+  .is_some()
+}
 #[no_mangle]
 pub unsafe extern "C" fn wodex_transport_cancel(value: *mut TransportBridge) {
   if let Some(value) = value.as_mut() {

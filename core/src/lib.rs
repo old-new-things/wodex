@@ -2,6 +2,7 @@
 
 extern crate alloc;
 
+mod api_url;
 mod app;
 mod backend;
 mod build_identity;

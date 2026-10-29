@@ -13,6 +13,7 @@ struct MockHost {
   recovery: Vec<Vec<u8>>,
   environment_key: String,
   openai_environment_key: String,
+  provider_environment_keys: Vec<(Provider, String)>,
   requests: Vec<(String, String, String)>,
   transport: VecDeque<TransportEvent>,
   inputs: VecDeque<Input>,
@@ -89,9 +90,15 @@ impl Host for MockHost {
     Ok(())
   }
   fn environment_key(&self, provider: Provider) -> String {
+    if let Some((_, key)) =
+      self.provider_environment_keys.iter().find(|(item, _)| *item == provider)
+    {
+      return key.clone();
+    }
     match provider {
       Provider::DeepSeek => self.environment_key.clone(),
-      Provider::OpenAiCompatible => self.openai_environment_key.clone(),
+      Provider::OpenAi | Provider::OpenAiCompatible => self.openai_environment_key.clone(),
+      _ => String::new(),
     }
   }
   fn start(&mut self, url: &str, key: &str, body: &str) -> Result<(), String> {
@@ -756,7 +763,7 @@ fn switch_keyboard_result_is_committed_through_the_same_rust_actions() {
 }
 
 #[test]
-fn provider_selection_resets_credentials_and_exposes_only_matching_options() {
+fn provider_selection_preserves_separate_settings_and_exposes_matching_options() {
   let mut app = App::new(MockHost::default(), "0.2.1", false, false).unwrap();
   app.commit_edit(EditTarget::Setting(Setting::ApiKey), "saved-deepseek-key".into());
   app.edit_setting(Setting::Thinking);
@@ -769,6 +776,10 @@ fn provider_selection_resets_credentials_and_exposes_only_matching_options() {
   assert_eq!(settings.base_url, "https://api.openai.com/v1");
   assert_eq!(last_saved(&app)["settings"]["api_key"], "");
   assert_eq!(last_saved(&app)["settings"]["provider"], "openai_compatible");
+  assert_eq!(
+    last_saved(&app)["settings"]["provider_profiles"]["deepseek"]["api_key"],
+    "saved-deepseek-key"
+  );
 
   let writes = app.host.writes.len();
   app.edit_setting(Setting::Thinking);
@@ -785,10 +796,15 @@ fn provider_selection_resets_credentials_and_exposes_only_matching_options() {
 
   app.dispatch(Action::Provider(Provider::DeepSeek));
   let settings = &app.core.state().settings;
-  assert!(settings.api_key.is_empty());
+  assert_eq!(settings.api_key, "saved-deepseek-key");
+  assert!(settings.thinking);
   assert_eq!(settings.model, "deepseek-flash");
   assert_eq!(settings.base_url, "https://api.deepseek.com");
   assert_eq!(settings.token_limit_field, TokenLimitField::MaxTokens);
+  assert_eq!(
+    last_saved(&app)["settings"]["provider_profiles"]["openai_compatible"]["api_key"],
+    "saved-compatible-key"
+  );
   let writes = app.host.writes.len();
   app.edit_setting(Setting::TokenLimitField);
   assert_eq!(app.host.writes.len(), writes);
@@ -801,11 +817,15 @@ fn provider_controls_remain_reachable_with_controller_navigation() {
   let (_backend, mut canvas) = canvas::test_backend::canvas();
   app.ui.page = Page::Settings;
   app.render(&mut canvas).unwrap();
-  app.ui.focused = "provider-deepseek".into();
+  app.ui.focused = "provider-selector".into();
+  app.input(Input::Gamepad(0));
+  assert_eq!(app.ui.page, Page::Providers);
+  app.render(&mut canvas).unwrap();
   app.input(Input::Gamepad(14));
   assert_eq!(app.ui.focused, "provider-openai");
   app.input(Input::Gamepad(0));
-  assert_eq!(app.core.state().settings.provider, Provider::OpenAiCompatible);
+  assert_eq!(app.core.state().settings.provider, Provider::OpenAi);
+  assert_eq!(app.ui.page, Page::Settings);
   assert!(app.buttons.is_empty());
   app.render(&mut canvas).unwrap();
   app.input(Input::Gamepad(12));
@@ -820,13 +840,20 @@ fn provider_controls_remain_reachable_with_controller_navigation() {
     app.input(Input::Gamepad(12));
     assert_eq!(app.ui.focused, expected);
   }
-  app.ui.focused = "provider-openai".into();
+  app.ui.focused = "provider-selector".into();
   app.input(Input::Gamepad(11));
+  assert_eq!(app.ui.focused, "home-menu");
+  app.input(Input::Gamepad(14));
   assert_eq!(app.ui.focused, "updates");
   app.input(Input::Gamepad(13));
   assert_eq!(app.ui.focused, "home-menu");
   app.input(Input::Gamepad(13));
   assert_eq!(app.ui.focused, "transfer");
+  app.dispatch(Action::ChooseProvider);
+  app.back();
+  assert_eq!(app.ui.page, Page::Settings);
+  assert_eq!(app.core.state().settings.provider, Provider::OpenAi);
+  assert_eq!(app.ui.focused, "provider-selector");
 }
 
 #[test]
@@ -874,6 +901,67 @@ fn environment_credentials_are_isolated_when_switching_providers() {
     assert_eq!(last_saved(&app)["settings"]["api_key"], "");
     assert!(app.host.writes.iter().all(|saved| !saved.contains("environment-secret")));
   }
+}
+
+#[test]
+fn inactive_profiles_keep_saved_keys_and_never_archive_environment_overrides() {
+  let host = MockHost {
+    environment_key: "deepseek-environment-secret".into(),
+    provider_environment_keys: vec![(Provider::Zai, "zai-environment-secret".into())],
+    ..Default::default()
+  };
+  let mut app = App::new(host, "0.2.1", false, false).unwrap();
+  app.commit_edit(EditTarget::Setting(Setting::ApiKey), "deepseek-saved-key".into());
+  app.apply_environment_key();
+  app.dispatch(Action::Provider(Provider::Zai));
+  assert_eq!(app.core.state().settings.api_key, "zai-environment-secret");
+  app.commit_edit(EditTarget::Setting(Setting::ApiKey), "zai-saved-key".into());
+  app.apply_environment_key();
+  app.dispatch(Action::Provider(Provider::OpenAiCompatible));
+  assert!(app.core.state().settings.api_key.is_empty());
+  let saved = last_saved(&app);
+  assert_eq!(saved["settings"]["provider_profiles"]["deepseek"]["api_key"], "deepseek-saved-key");
+  assert_eq!(saved["settings"]["provider_profiles"]["zai"]["api_key"], "zai-saved-key");
+  assert!(app.host.writes.iter().all(|saved| !saved.contains("environment-secret")));
+  app.dispatch(Action::Provider(Provider::Zai));
+  assert_eq!(app.core.state().settings.api_key, "zai-environment-secret");
+  assert_eq!(app.stored_key, "zai-saved-key");
+}
+
+#[test]
+fn failed_provider_change_restores_runtime_override_without_archiving_it() {
+  let mut app = app();
+  let before = app.persisted_content().unwrap();
+  let result = app.mutate(Command::Settings {
+    settings: SettingsPatch {
+      provider: Some(Provider::Zai),
+      api_key: Some("invalid\nkey".into()),
+      ..Default::default()
+    },
+  });
+  assert!(result.is_none());
+  assert_eq!(app.core.state().settings.provider, Provider::DeepSeek);
+  assert_eq!(app.core.state().settings.api_key, "test-key");
+  assert!(app.ui.environment_key);
+  assert_eq!(app.persisted_content().unwrap(), before);
+  assert!(app.core.state().settings.provider_profiles.is_empty());
+  assert!(app.host.writes.iter().all(|saved| !saved.contains("test-key")));
+}
+
+#[test]
+fn llama_http_opt_in_is_separate_and_other_providers_cannot_toggle_it() {
+  let mut app = App::new(MockHost::default(), "0.2.1", false, false).unwrap();
+  app.dispatch(Action::Provider(Provider::LlamaCpp));
+  assert!(!app.core.state().settings.allow_insecure_http);
+  app.edit_setting(Setting::AllowInsecureHttp);
+  assert!(app.core.state().settings.allow_insecure_http);
+  app.dispatch(Action::Provider(Provider::OpenAi));
+  assert!(!app.core.state().settings.allow_insecure_http);
+  let writes = app.host.writes.len();
+  app.edit_setting(Setting::AllowInsecureHttp);
+  assert_eq!(app.host.writes.len(), writes);
+  app.dispatch(Action::Provider(Provider::LlamaCpp));
+  assert!(app.core.state().settings.allow_insecure_http);
 }
 
 #[test]
@@ -1136,6 +1224,9 @@ fn pc_transfer_freezes_mutations_and_leaving_or_exiting_closes_listener() {
   let writes = app.host.writes.len();
   for action in [
     Action::NewChat,
+    Action::ChooseProvider,
+    Action::Provider(Provider::Zai),
+    Action::ProvidersBack,
     Action::HomeMenu,
     Action::Updates,
     Action::UpdateCheck,

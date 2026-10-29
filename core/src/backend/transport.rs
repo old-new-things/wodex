@@ -4,7 +4,14 @@ use super::{
   runtime::{JoinHandle, Mutex, Runtime},
 };
 use crate::app::host::TransportEvent;
-use alloc::{collections::VecDeque, format, string::String, sync::Arc, vec, vec::Vec};
+use alloc::{
+  collections::VecDeque,
+  format,
+  string::{String, ToString},
+  sync::Arc,
+  vec,
+  vec::Vec,
+};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 const MAX_QUEUE_BYTES: usize = 8 * 1024 * 1024;
@@ -46,6 +53,53 @@ impl Transport {
   }
 
   pub fn start(&mut self, url: &str, api_key: &str, body: &str) -> Result<(), String> {
+    let invalid_key = api_key.is_empty() || api_key.len() > 4096 || has_control(api_key);
+    let headers = if invalid_key {
+      Vec::new()
+    } else {
+      vec![(String::from("Authorization"), format!("Bearer {api_key}"))]
+    };
+    self.start_with_headers(
+      url,
+      &headers,
+      body,
+      false,
+      invalid_key.then_some("Enter a valid API key without control characters."),
+    )
+  }
+
+  pub fn start_prepared(
+    &mut self,
+    url: &str,
+    headers: &[(String, String)],
+    body: &str,
+    allow_insecure_http: bool,
+  ) -> Result<(), String> {
+    self.start_with_headers(url, headers, body, allow_insecure_http, None)
+  }
+
+  pub fn start_request(&mut self, request: &serde_json::Value) -> Result<(), String> {
+    let (Some(url), Some(body)) = (request["url"].as_str(), request.get("body")) else {
+      return Err("The provider request is incomplete.".into());
+    };
+    let headers: Vec<(String, String)> = serde_json::from_value(request["headers"].clone())
+      .map_err(|_| String::from("The provider request headers are invalid."))?;
+    let allow_insecure_http = request
+      .get("allow_insecure_http")
+      .map(|value| value.as_bool().ok_or("The local HTTP setting is invalid."))
+      .transpose()?
+      .unwrap_or(false);
+    self.start_prepared(url, &headers, &body.to_string(), allow_insecure_http)
+  }
+
+  fn start_with_headers(
+    &mut self,
+    url: &str,
+    headers: &[(String, String)],
+    body: &str,
+    allow_insecure_http: bool,
+    validation_error: Option<&str>,
+  ) -> Result<(), String> {
     if self.active() {
       return Err("A request is already in progress.".into());
     }
@@ -55,10 +109,12 @@ impl Transport {
     *self.shared.queue.lock() = Queue::default();
     self.shared.cancelled.store(false, Ordering::Release);
     self.shared.active.store(true, Ordering::Release);
-    let error = if !valid_url(self.http, url) {
-      Some("Use an HTTPS API endpoint. Plain HTTP is allowed only for a local mock server.")
-    } else if api_key.is_empty() || api_key.len() > 4096 || has_control(api_key) {
-      Some("Enter a valid API key without control characters.")
+    let error = if !valid_url(self.http, url, allow_insecure_http) {
+      Some("Use HTTPS, or explicitly allow private LAN HTTP in llama.cpp settings.")
+    } else if !valid_headers(headers) {
+      Some("The provider prepared invalid HTTP headers.")
+    } else if validation_error.is_some() {
+      validation_error
     } else if body.is_empty() || body.len() > MAX_REQUEST_BYTES {
       Some("The request is empty or exceeds the 4 MiB limit.")
     } else {
@@ -71,12 +127,15 @@ impl Transport {
     let mut request = Request::default();
     request.url = url.into();
     request.post = true;
-    request.headers = vec![
-      "Content-Type: application/json".into(),
-      "Accept: text/event-stream".into(),
-      "Expect:".into(),
-      format!("Authorization: Bearer {api_key}"),
-    ];
+    request.headers = vec!["Expect:".into()];
+    for (name, value) in headers {
+      request.headers.push(format!("{name}: {value}"));
+    }
+    for (name, value) in [("Content-Type", "application/json"), ("Accept", "text/event-stream")] {
+      if !headers.iter().any(|(key, _)| key.eq_ignore_ascii_case(name)) {
+        request.headers.push(format!("{name}: {value}"));
+      }
+    }
     request.body = body.as_bytes().to_vec();
     request.ca_bundle = self.ca_bundle.clone();
     request.no_proxy = url.get(..7).is_some_and(|scheme| scheme.eq_ignore_ascii_case("http://"));
@@ -159,8 +218,20 @@ impl Shared {
 fn has_control(text: &str) -> bool {
   text.bytes().any(|byte| byte < 0x20 || byte == 0x7f)
 }
-fn valid_url(http: Http, text: &str) -> bool {
-  if text.is_empty() || text.len() > 4096 || has_control(text) {
+fn valid_headers(headers: &[(String, String)]) -> bool {
+  headers.len() <= 16
+    && headers.iter().enumerate().all(|(index, (name, value))| {
+      ["authorization", "x-api-key", "content-type", "accept", "anthropic-version", "user-agent"]
+        .iter()
+        .any(|allowed| name.eq_ignore_ascii_case(allowed))
+        && !value.is_empty()
+        && value.len() <= 8192
+        && !has_control(value)
+        && !headers[..index].iter().any(|(earlier, _)| earlier.eq_ignore_ascii_case(name))
+    })
+}
+fn valid_url(http: Http, text: &str, allow_lan_http: bool) -> bool {
+  if crate::api_url::validate_request(text, allow_lan_http).is_err() {
     return false;
   }
   let Ok(url) = http.parse_url(text) else {
@@ -171,7 +242,8 @@ fn valid_url(http: Http, text: &str) -> bool {
   }
   url.scheme == "https"
     || (url.scheme == "http"
-      && matches!(url.host.as_str(), "localhost" | "127.0.0.1" | "[::1]" | "::1"))
+      && (matches!(url.host.as_str(), "localhost" | "127.0.0.1" | "[::1]" | "::1")
+        || (allow_lan_http && crate::api_url::is_lan_host(&url.host))))
 }
 
 fn transfer_error(code: u32) -> &'static str {

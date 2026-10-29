@@ -19,6 +19,14 @@ serde_json = { version = "1", default-features = false, features = ["alloc"] }
 sha2 = { version = "0.10.9", default-features = false, features = ["force-soft"] }
 tokn-endpoint-chat-completions = { git = "https://github.com/tokn-ai/tokn", rev = "d546ef2d306e9a952a17eae8a58366483832da05", default-features = false }
 tokn-endpoint-core = { git = "https://github.com/tokn-ai/tokn", rev = "d546ef2d306e9a952a17eae8a58366483832da05", default-features = false }
+tokn-core = { git = "https://github.com/tokn-ai/tokn", rev = "d546ef2d306e9a952a17eae8a58366483832da05", default-features = false }
+tokn-headers = { git = "https://github.com/tokn-ai/tokn", rev = "d546ef2d306e9a952a17eae8a58366483832da05", default-features = false }
+tokn-convert = { git = "https://github.com/tokn-ai/tokn", rev = "d546ef2d306e9a952a17eae8a58366483832da05", default-features = false }
+tokn-provider-deepseek = { git = "https://github.com/tokn-ai/tokn", rev = "d546ef2d306e9a952a17eae8a58366483832da05", default-features = false }
+tokn-provider-openai = { git = "https://github.com/tokn-ai/tokn", rev = "d546ef2d306e9a952a17eae8a58366483832da05", default-features = false }
+tokn-provider-opencode = { git = "https://github.com/tokn-ai/tokn", rev = "d546ef2d306e9a952a17eae8a58366483832da05", default-features = false }
+tokn-provider-llama-cpp = { git = "https://github.com/tokn-ai/tokn", rev = "d546ef2d306e9a952a17eae8a58366483832da05", default-features = false }
+tokn-provider-zai = { git = "https://github.com/tokn-ai/tokn", rev = "d546ef2d306e9a952a17eae8a58366483832da05", default-features = false }
 unicode-width = { version = "0.2.2", default-features = false }
 zune-core = { version = "0.5.3", default-features = false }
 zune-jpeg = { version = "0.5.15", default-features = false }

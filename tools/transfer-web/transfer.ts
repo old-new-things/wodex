@@ -234,7 +234,7 @@ configEditor.form.addEventListener("submit", async event => {
     awaitingEditor = true;
     pending = true;
     statusRevision += 1;
-    const message = "Changes sent. Confirm replacement on your Switch to save them, or reject to keep the previous settings.";
+    const message = "Changes sent. Confirm replacement of provider profiles and preferences on your Switch to save them, or reject to keep the previous settings.";
     configEditor.notice(message);
     notice(message);
   } catch (error) {
@@ -265,7 +265,7 @@ async function download(channel: Channel): Promise<void> {
     link.remove();
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
     notice(channel === "config"
-      ? "Configuration downloaded, including the saved API key. Keep this file private."
+      ? "Configuration downloaded, including all provider profiles and saved API keys. Keep this file private."
       : "Sessions downloaded. Keep this chat backup private.");
   } catch (error) {
     if (current === generation) notice(errorMessage(error), true);

@@ -13,7 +13,12 @@ use crate::backend::{
 };
 use crate::provider::Provider;
 use crate::update::UpdateChannel;
-use alloc::{collections::VecDeque, format, string::String, vec::Vec};
+use alloc::{
+  collections::VecDeque,
+  format,
+  string::{String, ToString},
+  vec::Vec,
+};
 use core::{ffi::c_void, slice};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -127,6 +132,14 @@ pub trait Host {
   fn preserve(&mut self, content: &[u8]) -> Result<(), String>;
   fn environment_key(&self, provider: Provider) -> String;
   fn start(&mut self, url: &str, key: &str, body: &str) -> Result<(), String>;
+  fn start_prepared(&mut self, request: &serde_json::Value) -> Result<(), String> {
+    let (Some(url), Some(key), Some(body)) =
+      (request["url"].as_str(), request["api_key"].as_str(), request.get("body"))
+    else {
+      return Err("The provider request is incomplete.".into());
+    };
+    self.start(url, key, &body.to_string())
+  }
   fn cancel(&mut self);
   fn network_active(&self) -> bool;
   fn poll_transport(&mut self) -> Option<TransportEvent>;
@@ -332,7 +345,11 @@ impl Host for NativeHost {
   fn environment_key(&self, provider: Provider) -> String {
     self.fs.environment(match provider {
       Provider::DeepSeek => "DEEPSEEK_API_KEY",
-      Provider::OpenAiCompatible => "OPENAI_API_KEY",
+      Provider::OpenAi | Provider::OpenAiCompatible => "OPENAI_API_KEY",
+      Provider::OpenCodeGo => "OPENCODE_API_KEY",
+      Provider::LlamaCpp => "LLAMA_CPP_API_KEY",
+      Provider::Zai | Provider::ZaiCodingPlan => "ZAI_API_KEY",
+      Provider::ZhipuAi | Provider::ZhipuAiCodingPlan => "ZHIPUAI_API_KEY",
     })
   }
   fn start(&mut self, url: &str, key: &str, body: &str) -> Result<(), String> {
@@ -340,6 +357,12 @@ impl Host for NativeHost {
       return Err("Finish PC transfer or the HOME Menu operation first.".into());
     }
     self.transport.start(url, key, body)
+  }
+  fn start_prepared(&mut self, request: &serde_json::Value) -> Result<(), String> {
+    if self.home_menu.active() || self.transfer.active() {
+      return Err("Finish PC transfer or the HOME Menu operation first.".into());
+    }
+    self.transport.start_request(request)
   }
   fn cancel(&mut self) {
     self.transport.cancel();
