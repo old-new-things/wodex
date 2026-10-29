@@ -78,6 +78,15 @@ impl Updater {
     ca_bundle: String,
   ) -> Result<Self, String> {
     let test_api_base = validate_test_base(&http, &test_api_base)?;
+    let mut state = State::default();
+    // A failed cosmetic migration must leave chat usable and both recovery
+    // copies intact. Installation repeats it before rotating any backup.
+    if files::validate_target_path(&target_path).is_ok() {
+      if let Err(message) = files::migrate_legacy_backup(&fs, &target_path) {
+        state.status.phase = UpdatePhase::Error;
+        state.status.message = message;
+      }
+    }
     Ok(Self {
       runtime,
       worker: None,
@@ -90,7 +99,7 @@ impl Updater {
         ca_bundle,
         cancelled: AtomicBool::new(false),
         working: AtomicBool::new(false),
-        state: runtime.mutex(State::default())?,
+        state: runtime.mutex(state)?,
       }),
     })
   }

@@ -11,7 +11,40 @@ use crate::{
 use super::{PendingUpdate, WorkError};
 
 pub(super) fn backup_path(target: &str) -> String {
+  // Callers validate the absolute NRO path first. hbmenu ignores dotfiles in
+  // both directory listings and its single-NRO folder detection.
+  let (parent, name) = target.rsplit_once('/').unwrap();
+  format!("{parent}/.{}.previous.nro", &name[..name.len() - 4])
+}
+
+fn legacy_backup_path(target: &str) -> String {
   format!("{}.previous.nro", &target[..target.len() - 4])
+}
+
+/// Hide backups created by older builds without discarding a recovery copy.
+/// This is a metadata-only migration; neither executable is opened or changed.
+pub(super) fn migrate_legacy_backup(fs: &Fs, target: &str) -> Result<(), String> {
+  validate_target_path(target)?;
+  let legacy = legacy_backup_path(target);
+  let Some(info) = fs.stat(&legacy, false)? else {
+    return Ok(());
+  };
+  if !info.is_regular() {
+    return Err(
+      "The visible recovery backup is not a regular file. Move it aside manually before updating."
+        .into(),
+    );
+  }
+  let hidden = backup_path(target);
+  if fs.stat(&hidden, false)?.is_some() {
+    return Err("Both visible and hidden recovery backups exist. Move the visible .previous.nro to your PC before updating. Neither backup was changed.".into());
+  }
+  fs.rename(&legacy, &hidden).map_err(|_| {
+    String::from(
+      "Cannot hide the recovery backup. Rename its filename to start with a dot, then try again.",
+    )
+  })?;
+  fs.sync_parent(&hidden)
 }
 
 pub(super) fn validate_target_path(target: &str) -> Result<(), String> {
@@ -316,6 +349,7 @@ fn install_with(
     let size = installed.size()?;
     validate_nro(&mut installed, size, false)?;
   }
+  migrate_legacy_backup(fs, &pending.target_path)?;
   if let Some(backup) = fs.stat(&pending.backup_path, false)? {
     if !backup.is_regular() {
       return Err(
@@ -331,7 +365,10 @@ fn install_with(
   })?;
   if rename_file(&pending.staged_path, &pending.target_path).is_err() {
     if rename_file(&pending.backup_path, &pending.target_path).is_err() {
-      return Err("Installation failed. Your previous version is preserved in .previous.nro; launch it manually.".into());
+      return Err(format!(
+        "Installation failed. Rename the hidden {} backup back to {} to recover.",
+        pending.backup_path, pending.target_path
+      ));
     }
     return Err("Installation failed. The previous installed version was restored.".into());
   }
@@ -344,9 +381,14 @@ mod tests {
 
   #[test]
   fn replacement_paths_bind_the_stage_and_backup_to_the_running_executable() {
-    for target in ["/wodex.nro", "/switch/wodex/wodex.nro", "sdmc:/switch/wodex/wodex.nro"] {
+    for (target, backup) in [
+      ("/wodex.nro", "/.wodex.previous.nro"),
+      ("/switch/wodex/custom.nro", "/switch/wodex/.custom.previous.nro"),
+      ("sdmc:/switch/wodex/wodex.nro", "sdmc:/switch/wodex/.wodex.previous.nro"),
+    ] {
       let pending = candidate(target, &"a".repeat(64), 4096).unwrap();
       validate_pending(&pending).unwrap();
+      assert_eq!(pending.backup_path, backup);
       for invalid in [
         PendingUpdate { staged_path: "/unrelated.nro".into(), ..pending.clone() },
         PendingUpdate { backup_path: "/unrelated.previous.nro".into(), ..pending.clone() },
@@ -364,6 +406,7 @@ mod tests {
       "/switch//wodex.nro",
       "/switch/./wodex.nro",
       "/switch/wodex.previous.nro",
+      "/switch/.wodex.previous.nro",
       "/switch/wodex.nro\0",
       "/switch/wodex:\\bad.nro",
       "sdmc:/switch/../wodex.nro",

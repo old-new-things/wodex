@@ -53,8 +53,8 @@ private:
 };
 
 // Call only after the application, worker, fonts, and Platform RomFS mount have
-// been destroyed. The installed file is moved to a visible .previous.nro backup.
-// Power loss between the two renames may require launching that backup manually.
+// been destroyed. The installed file is moved to a hidden .<stem>.previous.nro backup.
+// Power loss between the two renames may require restoring that filename manually.
 void install_update(const PendingUpdate& pending);
 
 }  // namespace wodex

@@ -151,7 +151,7 @@ wodex::UpdateStatus wait(Updater& updater) {
 PendingUpdate fixture(const TemporaryDirectory& directory) {
   const auto old = nro(1);
   const auto next = nro(2);
-  PendingUpdate pending{directory.path(), directory.path() + ".update.part", directory.path("wodex.previous.nro"), digest(next), next.size()};
+  PendingUpdate pending{directory.path(), directory.path() + ".update.part", directory.path(".wodex.previous.nro"), digest(next), next.size()};
   write(pending.target_path, old);
   write(pending.staged_path, next);
   return pending;
@@ -174,6 +174,8 @@ void test_download(const std::string& base) {
       "The downloaded version was not fully verified.");
     pending = updater.pending_install();
     check(pending.has_value() && pending->staged_path == directory.path() + ".update.part", "No staged install was prepared.");
+    check(pending->backup_path == directory.path(".wodex.previous.nro"),
+      "The selected update would create a visible recovery NRO in hbmenu.");
     check(read(directory.path()) == old, "Downloading changed the installed executable.");
     struct stat status{};
     check(::stat(pending->staged_path.c_str(), &status) == 0 && (status.st_mode & 0777) == 0600,
@@ -379,7 +381,8 @@ void test_partial_path_safety(const std::string& base) {
 void test_paths_and_ready_reset(const std::string& base) {
   TemporaryDirectory directory;
   write(directory.path(), nro(1));
-  for (const auto& target : {directory.path("../escape.nro"), directory.path("wodex.previous.nro"), std::string{"wodex.nro"}}) {
+  for (const auto& target : {directory.path("../escape.nro"), directory.path("wodex.previous.nro"),
+      directory.path(".wodex.previous.nro"), std::string{"wodex.nro"}}) {
     Updater updater{"0.2.0", target, base};
     updater.check("fixture/good");
     check(wait(updater).phase == UpdatePhase::Available, "Path tests could not inspect the version.");
@@ -396,6 +399,97 @@ void test_paths_and_ready_reset(const std::string& base) {
     read(directory.path() + ".update.part") == nro(2), "A new check retained a pending install or discarded its reusable file.");
 }
 
+void test_backup_migration(const std::string& base) {
+  {
+    TemporaryDirectory directory;
+    const auto pending = fixture(directory);
+    const auto legacy = directory.path("wodex.previous.nro");
+    write(legacy, nro(7));
+    {
+      Updater updater{"0.2.0", directory.path(), base};
+      check(updater.status().phase == UpdatePhase::Idle && !updater.active() && !updater.pending_install(),
+        "Recovery migration started an update or made a staged file installable.");
+      check(!std::filesystem::exists(legacy) && read(pending.backup_path) == nro(7),
+        "Startup did not hide the existing recovery NRO while preserving its bytes.");
+      check(read(pending.target_path) == nro(1) && read(pending.staged_path) == nro(2),
+        "Recovery migration changed the installed executable or retained download.");
+    }
+    Updater reopened{"0.2.0", directory.path(), base};
+    check(reopened.status().phase == UpdatePhase::Idle && read(pending.backup_path) == nro(7) &&
+      !std::filesystem::exists(legacy), "Reopening Wodex did not preserve the migrated recovery copy.");
+  }
+  {
+    TemporaryDirectory directory;
+    const auto target = directory.path("custom.nro");
+    const auto legacy = directory.path("custom.previous.nro");
+    const auto hidden = directory.path(".custom.previous.nro");
+    write(target, nro(1));
+    write(legacy, nro(7));
+    Updater updater{"0.2.0", target, base};
+    check(updater.status().phase == UpdatePhase::Idle && !std::filesystem::exists(legacy) &&
+      read(hidden) == nro(7) && read(target) == nro(1),
+      "Recovery migration ignored the actual loader filename.");
+  }
+  for (const std::string name : {"wodex.previous.nro", ".wodex.previous.nro"}) {
+    TemporaryDirectory directory;
+    const auto target = directory.path(name);
+    const auto legacy_name = std::filesystem::path(name).stem().string() + ".previous.nro";
+    const auto legacy = directory.path(legacy_name);
+    write(target, nro(1));
+    write(legacy, nro(7));
+    Updater updater{"0.2.0", target, base};
+    check(read(target) == nro(1) && read(legacy) == nro(7) &&
+      !std::filesystem::exists(directory.path("." + legacy_name)),
+      "Launching a recovery NRO migrated files despite replacement being disabled.");
+  }
+  for (const bool symlink : {false, true}) {
+    TemporaryDirectory directory;
+    const auto pending = fixture(directory);
+    const auto legacy = directory.path("wodex.previous.nro");
+    const auto unrelated = directory.path("unrelated.bin");
+    if (symlink) {
+      write(unrelated, nro(7));
+      std::filesystem::create_symlink(unrelated, legacy);
+    } else {
+      std::filesystem::create_directory(legacy);
+    }
+    Updater updater{"0.2.0", directory.path(), base};
+    const auto status = updater.status();
+    check(status.phase == UpdatePhase::Error && !status.message.empty() && !updater.active(),
+      "A nonregular legacy recovery path did not produce a nonfatal migration error.");
+    check(!std::filesystem::exists(pending.backup_path) &&
+      (symlink ? std::filesystem::is_symlink(legacy) : std::filesystem::is_directory(legacy)),
+      "Recovery migration moved or deleted a nonregular legacy path.");
+    check(read(pending.target_path) == nro(1) && read(pending.staged_path) == nro(2),
+      "A recovery migration error changed an installed or staged executable.");
+    if (symlink) check(read(unrelated) == nro(7), "Recovery migration changed a symlink's destination.");
+  }
+  for (int hidden_kind = 0; hidden_kind < 3; ++hidden_kind) {
+    TemporaryDirectory directory;
+    const auto pending = fixture(directory);
+    const auto legacy = directory.path("wodex.previous.nro");
+    const auto unrelated = directory.path("unrelated.bin");
+    write(legacy, nro(7));
+    if (hidden_kind == 0) {
+      write(pending.backup_path, nro(8));
+    } else if (hidden_kind == 1) {
+      std::filesystem::create_directory(pending.backup_path);
+    } else {
+      write(unrelated, nro(8));
+      std::filesystem::create_symlink(unrelated, pending.backup_path);
+    }
+    Updater updater{"0.2.0", directory.path(), base};
+    check(updater.status().phase == UpdatePhase::Error && read(legacy) == nro(7),
+      "Recovery migration overwrote or silently discarded a conflicting backup.");
+    check(hidden_kind == 0 ? read(pending.backup_path) == nro(8) : hidden_kind == 1 ?
+      std::filesystem::is_directory(pending.backup_path) : std::filesystem::is_symlink(pending.backup_path),
+      "Recovery migration replaced the occupied hidden backup path.");
+    if (hidden_kind == 2) check(read(unrelated) == nro(8), "A backup collision changed a symlink's destination.");
+    check(read(pending.target_path) == nro(1) && read(pending.staged_path) == nro(2),
+      "A backup collision changed the current executable or retained download.");
+  }
+}
+
 int injected_rename(const char* from, const char* to) {
   ++rename_count;
   if (rename_count == 2 || (fail_rollback && rename_count == 3)) { errno = EIO; return -1; }
@@ -403,6 +497,39 @@ int injected_rename(const char* from, const char* to) {
 }
 
 void test_install_safety() {
+  {
+    TemporaryDirectory directory;
+    const auto pending = fixture(directory);
+    const auto legacy = directory.path("wodex.previous.nro");
+    write(legacy, nro(7));
+    wodex::install_update(pending);
+    check(!std::filesystem::exists(legacy) && read(pending.backup_path) == nro(1) &&
+      read(pending.target_path) == nro(2), "Direct installation left a visible legacy recovery copy.");
+  }
+  {
+    TemporaryDirectory directory;
+    const auto pending = fixture(directory);
+    const auto legacy = directory.path("wodex.previous.nro");
+    write(legacy, nro(7));
+    write(pending.backup_path, nro(8));
+    rejects([&] { wodex::install_update(pending); }, "A recovery-backup collision allowed installation.");
+    check(read(legacy) == nro(7) && read(pending.backup_path) == nro(8) &&
+      read(pending.target_path) == nro(1) && read(pending.staged_path) == nro(2),
+      "Installation changed files before resolving a recovery-backup collision.");
+  }
+  for (const bool invalid_current : {false, true}) {
+    TemporaryDirectory directory;
+    const auto pending = fixture(directory);
+    const auto legacy = directory.path("wodex.previous.nro");
+    write(legacy, nro(7));
+    auto invalid = nro(invalid_current ? 1 : 2);
+    invalid[0x10] = 0;
+    write(invalid_current ? pending.target_path : pending.staged_path, invalid);
+    rejects([&] { wodex::install_update(pending); },
+      "An invalid executable allowed installation with a legacy recovery copy.");
+    check(read(legacy) == nro(7) && !std::filesystem::exists(pending.backup_path),
+      "Installation migrated recovery files before validating both executables.");
+  }
   {
     TemporaryDirectory directory;
     auto pending = fixture(directory);
@@ -455,7 +582,7 @@ void test_install_safety() {
     check(rename_count == 3 && read(pending.staged_path) == nro(2), "The rollback sequence did not retain the downloaded executable.");
     if (rollback_failure) {
       check(!std::filesystem::exists(pending.target_path) && read(pending.backup_path) == nro(1),
-        "A rollback failure lost the manually launchable previous version.");
+        "A rollback failure lost the recoverable hidden previous version.");
       rejects([&] { wodex::install_update(pending); }, "Retrying during a rename gap removed the previous version.");
       check(read(pending.backup_path) == nro(1), "A retry deleted the only installed-version backup.");
     } else {
@@ -535,6 +662,7 @@ int main(int argc, char** argv) {
     test_rejects_invalid_resume_headers(argv[1]);
     test_partial_path_safety(argv[1]);
     test_paths_and_ready_reset(argv[1]);
+    test_backup_migration(argv[1]);
     test_install_safety();
     if (argc == 3) test_real_artifact(argv[2]);
     std::cout << "Update integration: " << passed << " checks passed.\n";

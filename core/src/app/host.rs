@@ -498,6 +498,7 @@ mod tests {
     );
     for invalid in [
       "sdmc:/switch/wodex.previous.nro",
+      "sdmc:/switch/.wodex.previous.nro",
       "sdmc:/switch/../wodex.nro",
       "sdmc://wodex.nro",
       "sdmc:/switch/./wodex.nro",
