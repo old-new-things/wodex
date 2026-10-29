@@ -117,7 +117,7 @@ The Rust renderer uses the bundled CJK font and stays `no_std`. Markdown images 
 
 ## HOME Menu
 
-In current nightlies, open **Settings → HOME Menu** to install a Wodex tile. It launches `sdmc:/switch/wodex/wodex.nro`, so later app updates do not require reinstalling the tile. Your custom firmware must support unsigned homebrew titles. The installer prepares its bundled forwarder on the console; no key file or separate NSP download is needed. [HOME Menu instructions](docs/home-menu.md) cover installation, removal, and the build process.
+In current nightlies, open **Settings → Install to dock** to install a Wodex tile on the Switch HOME Menu. It launches `sdmc:/switch/wodex/wodex.nro`, so later app updates do not require reinstalling the tile. Your custom firmware must support unsigned homebrew titles. The installer prepares its bundled forwarder on the console; no key file or separate NSP download is needed. [HOME Menu instructions](docs/home-menu.md) cover installation, removal, and the build process.
 
 ## PC import and export
 

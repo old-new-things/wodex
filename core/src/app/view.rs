@@ -496,7 +496,7 @@ impl View<'_> {
     self.canvas.text("MAKE YOURSELF AT HOME", 318, 30, 15, ACCENT, 0);
     self.canvas.text("Settings", 312, 68, 36, INK, 0);
     self.button("transfer", "PC transfer", rect(600, 64, 184, 46), Action::Transfer, false);
-    self.button("home-menu", "HOME Menu", rect(804, 64, 206, 46), Action::HomeMenu, false);
+    self.button("home-menu", "Install to dock", rect(804, 64, 206, 46), Action::HomeMenu, false);
     self.button("updates", "Updates", rect(1030, 64, 206, 46), Action::Updates, false);
     let state = self.state;
     let settings = &state.settings;
@@ -768,7 +768,7 @@ impl View<'_> {
 
   fn home_menu(&mut self, status: &HomeMenuStatus, demo: bool, blocked: bool) {
     self.canvas.text("ONE TILE. STRAIGHT TO YOUR CONVERSATIONS.", 318, 30, 15, ACCENT, 0);
-    self.canvas.text("HOME Menu", 312, 68, 36, INK, 0);
+    self.canvas.text("Install to dock", 312, 68, 36, INK, 0);
     self.button(
       "home-menu-back",
       "Back to Settings",
@@ -776,14 +776,7 @@ impl View<'_> {
       Action::HomeMenuBack,
       false,
     );
-    self.canvas.text(
-      "Add a Wodex tile that opens the app on your SD card.",
-      318,
-      140,
-      22,
-      INK,
-      910,
-    );
+    self.canvas.text("Add a Wodex tile to your Switch HOME Menu.", 318, 140, 22, INK, 910);
     self.canvas.text("KEEP WODEX AT THIS LOCATION", 318, 190, 14, MUTED, 0);
     self.canvas.rect(rect(314, 218, 922, 52), ELEVATED, 9);
     self.canvas.text(NRO_PATH, 334, 231, 21, INK, 0);
@@ -846,7 +839,7 @@ impl View<'_> {
       if status.phase == HomeMenuPhase::Ready {
         self.button(
           "home-menu-install",
-          "Install HOME Menu tile",
+          "Install to dock",
           rect(840, 532, 396, 50),
           Action::HomeMenuInstall,
           true,

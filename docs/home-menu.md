@@ -3,8 +3,8 @@
 Current nightlies can install a Wodex tile on the Switch HOME Menu. The tile starts the NRO with application memory, without opening hbmenu.
 
 1. Place Wodex at `sdmc:/switch/wodex/wodex.nro` and launch it.
-2. Open **Settings → HOME Menu**.
-3. Read the installation information, then choose **Install HOME Menu tile**.
+2. Open **Settings → Install to dock**.
+3. Read the installation information, then choose **Install to dock**.
 4. Wait for installation to finish, exit Wodex, and return to HOME.
 
 The Switch must already support launching unsigned homebrew titles through its custom firmware. Wodex does not install or modify custom firmware. Desktop builds show the instructions but cannot install a Switch title.

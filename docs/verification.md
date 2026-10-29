@@ -13,7 +13,7 @@ Verification updated on 2026-10-29.
 | Bundled CJK glyph coverage and mixed-language rendering | 216 checks passed, including styled fonts, the monospace code face and baseline metrics |
 | Desktop CMake Release build | Passed, AppleClang 17 + Rust 1.99 |
 | Headless chat and update-page rendering smoke tests | Passed; Versions/Nightly and empty-source screens visually inspected |
-| HOME Menu UI, installation ordering and failure handling | 8 UI tests and 11 backend tests passed; desktop HOME Menu page rendered and visually inspected |
+| HOME Menu UI, installation ordering and failure handling | 8 UI tests and 11 backend tests passed; Settings and Install to dock pages rendered and visually inspected |
 | PC transfer schemas, server access/framing/lifetime and application import policy | 10 state, 16 backend and 11 application tests passed |
 | PC browser protocol through the real Rust app and native sockets | 176 checks passed, including provider selection, saved-key exports, independent imports, confirmation, rejection, recovery and responsive shutdown |
 | PC transfer native UI | Ready, active, confirmation and Settings screens rendered and visually inspected |
@@ -41,7 +41,7 @@ Verification updated on 2026-10-29.
 
 Local NRO: `build/switch/wodex.nro`, version 0.2.1, 27,153,242 bytes (about 25.9 MiB). The embedded NACP version is verified. This local build uses the development identity; CI embeds the actual publication identity.
 
-SHA-256: `988f8b96e618eea2a6ab2dd9a87ab0bc59746160cae2c028913190c873b194b6`. Published CI binaries embed their actual workflow identity and have their own download checksums.
+SHA-256: `dee43538631ed4ebce211500d9beab132c04e04aa51b3fc801bdf6d08f667856`. Published CI binaries embed their actual workflow identity and have their own download checksums.
 
 Native tests call the production Rust transport and storage through test-only C++ facades. They cover actual curl transfer, every-byte fragmented UTF-8 SSE, reasoning/content/usage, retry context, authentication errors without response-body leakage, redirect refusal, truncation, cancellation, queue limits, private desktop writes, unique recovery backups, and persistence roundtrips. The application test drives the production Rust application through SDL compose, editor cancellation, send, retry, update navigation and exit/reload, including an environment-only API key. Adapter tests verify normalized SDL/libnx input and clipboard values. Font tests exercise the Rust filename selection and renderer for Simplified/Traditional Chinese, Latin, kana, Hangul, punctuation and representative rare CJK characters, wrapping and clipping at four UI point sizes, font overrides and resource selection.
 
@@ -56,6 +56,8 @@ Update tests additionally cover redirect rejection, exact Pages project/channel 
 Resumable-update tests cover disconnected transfers retried in the same object and after restart, cancelled-file retention, exact Range offsets, one raw partial file with no sidecars, complete-file reuse, ignored ranges, 416 fallback, stale/corrupt prefixes, oversized/empty partials, malformed/duplicate/missing range headers, compressed range responses, symlinks/directories and invalid final digests. Range metadata is checked before body append; persisted size/hash/NRO validation gates Ready. A controller/UI test checks retry visibility and prevents a retained partial from bypassing source revalidation. The public GitHub Pages server also returned an exact `206 Content-Range` for a 32-byte tail request.
 
 Recovery-backup tests cover metadata-only migration from visible `<stem>.previous.nro` to hidden `.<stem>.previous.nro`, custom loader filenames, idempotent startup, disabled replacement when launched from a recovery NRO, nonfatal migration errors, directory/symlink refusal, collision preservation, and installation validation before migration or rotation. Existing rollback and failed-rollback cases retain the hidden recovery copy. The upstream hbmenu scanner skips dot-prefixed files; actual menu refresh and SD-card migration still need console verification.
+
+The Settings entry, installation page title and confirmation action use **Install to dock**, with the page explaining that it adds a Switch HOME Menu tile. Native previews show the Settings label fits its 206-pixel button (131 pixels of text at 20 pixels) and the page heading stays clear of Back to Settings.
 
 HOME Menu tests validate the pinned template, dependent hashes, content metadata and title ID. Failure injection exercises each pre-registration operation, partial placeholder creation/registration, uncertain metadata writes, uncertain HOME Menu registration, collisions and failed cleanup. Referenced or pre-existing content is retained when ownership or registration cannot be established. UI tests cover failed saves, demo mode, busy operations, stale actions, exit blocking and readable recovery messages. The 177,172-byte template's SHA-256 is `683bfe7ececc3ee317cd64b3c951c43df85353f050dcb9884fee2d719a635c92`; source and generator checksums are recorded in its manifest. Its return path requests normal application exit without waiting for foreground focus, including after older NROs return. The actual Switch service calls are compile-checked; host mocks cannot prove their behavior on a console.
 
