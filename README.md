@@ -15,6 +15,8 @@ The app streams Markdown replies with PNG/JPEG images, saves conversations, supp
 3. Open **Settings**, choose **DeepSeek** or **OpenAI-compatible**, and enter your API key. For OpenAI-compatible services, set the provider's API base URL and exact model name, then return to chat.
 4. Press **X** to write, confirm the keyboard, then select **Send**.
 
+Album/applet mode is unsupported. Wodex checks the launch mode before initializing graphics, networking or fonts and shows instructions to use title override instead. Older builds do not have this check; if one freezes after launching from Album, relaunch through a game with **R** held before testing again.
+
 Models run remotely; the Switch is the chat client. Wodex connects directly to your configured provider. There is no application server to deploy.
 
 | Control | Action |

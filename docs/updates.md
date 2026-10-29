@@ -11,6 +11,8 @@ New installations use `old-new-things/wodex` and the **Versions** channel. Exist
 3. Wait for verification to complete. Choose **Install and exit** to replace the running NRO.
 4. Launch Wodex again from hbmenu or its installed HOME Menu tile. Installation exits the app; it does not restart it automatically. The tile forwards to the NRO and does not need reinstalling after an update.
 
+Use hbmenu through a game with **R** held so Wodex has full application memory. Album/applet mode is unsupported; current nightlies reject it before graphics and font initialization. Older builds may still enter it without a warning. A freeze in Album mode is a reason to repeat the same operation in full application mode before attributing it to a particular update.
+
 Wodex 0.2.1 adds the optional Nightly channel. Current nightlies contain the timestamp-based selection and return-to-Versions behavior described below. The fixed 0.2.1 download retains its original comparison rules; select Nightly to receive the new behavior. Wodex 0.2.0 can update to 0.2.1 through Versions first.
 
 If you installed the early nightly from commit `52dd555`, which displayed the provisional version 0.3.0, install a current nightly manually once: close Wodex, copy its `wodex.nro` from the [Nightly downloads](https://old-new-things.github.io/wodex/#nightly) over your existing NRO, and reopen it. Preserve the application data directory. That older executable rejects lower version numbers; it needs this manual replacement to receive the new comparison code. Afterward, choosing Versions can install the latest published version even if its version number is lower.

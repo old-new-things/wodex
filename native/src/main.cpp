@@ -96,6 +96,15 @@ int main(int argc, char **argv) {
     }
   }
   try {
+#ifdef __SWITCH__
+    // Reject the unsupported memory mode before SDL, networking, or font
+    // caches are initialized. The console error path remains available.
+    if (appletGetAppletType() == AppletType_LibraryApplet)
+      throw std::runtime_error(
+        "Wodex requires full application memory.\n"
+        "Hold R while launching a game, open hbmenu, then start Wodex.\n"
+        "Launching hbmenu from Album is not supported.");
+#endif
     std::unique_ptr<WodexPendingUpdate, decltype(&wodex_pending_free)> pending_update(nullptr, wodex_pending_free);
     const auto fs_api = wodex_native_fs_api();
     const WodexBackendApi backend_api{
